@@ -20,7 +20,7 @@ if [[ -z "$ID" ]]; then
   ID="$(c2c::resolve_name "$QUERY")"
 fi
 if [[ -z "$ID" ]]; then
-  echo "ERROR: no contact matches '$QUERY'. Run /peer-list to see your peers." >&2
+  echo "ERROR: no contact matches '$QUERY'. Run /c2c-client:peer-list to see your peers." >&2
   exit 1
 fi
 

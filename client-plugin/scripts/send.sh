@@ -21,7 +21,7 @@ if [[ -z "$ID" ]]; then
   ID="$(c2c::resolve_name "$PEER")"
 fi
 if [[ -z "$ID" ]]; then
-  echo "ERROR: no peer named '$PEER'. Run /peer-list to see your peers." >&2
+  echo "ERROR: no peer named '$PEER'. Run /c2c-client:peer-list to see your peers." >&2
   exit 1
 fi
 

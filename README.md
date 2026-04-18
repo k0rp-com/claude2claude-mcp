@@ -64,12 +64,12 @@ pnpm typecheck
 
 **Путь B — slash-командой плагина.** Если форма не поднялась, её пропустили, или хочется скриптуемо:
 ```
-/peer-config <url> <token>
-/peer-config show      # посмотреть текущий resolved-конфиг (токен редактируется)
-/peer-config clear     # удалить ~/.config/c2c-client/config.json
+/c2c-client:peer-config <url> <token>
+/c2c-client:peer-config show      # посмотреть текущий resolved-конфиг (токен редактируется)
+/c2c-client:peer-config clear     # удалить ~/.config/c2c-client/config.json
 ```
 
-Приоритет (выше = выигрывает): форма `userConfig` > env `C2C_URL`/`C2C_MEDIATOR_TOKEN` > `~/.config/c2c-client/config.json` > дефолт. `/peer-config show` показывает, из какого источника пришёл каждый параметр.
+Приоритет (выше = выигрывает): форма `userConfig` > env `C2C_URL`/`C2C_MEDIATOR_TOKEN` > `~/.config/c2c-client/config.json` > дефолт. `/c2c-client:peer-config show` показывает, из какого источника пришёл каждый параметр.
 
 Требования: `bash`, `curl`, `jq`, `openssl`, `uuidgen` (или `/proc/sys/kernel/random/uuid`).
 
@@ -78,50 +78,50 @@ pnpm typecheck
 На каждой машине задай имя — **обязательно**, без него ничего не работает:
 
 ```
-/peer-name laptop          # это имя увидят пиры
-/peer-id                   # покажет fingerprint вида 8410-6521-b45f
+/c2c-client:peer-name laptop          # это имя увидят пиры
+/c2c-client:peer-id                   # покажет fingerprint вида 8410-6521-b45f
 ```
 
-`/peer-name` на первом запуске сам зарегистрирует машину (сгенерит ed25519-пару локально, отправит pubkey на сервер). На последующих — переименовывает.
+`/c2c-client:peer-name` на первом запуске сам зарегистрирует машину (сгенерит ed25519-пару локально, отправит pubkey на сервер). На последующих — переименовывает.
 
 ### Спаривание двух машин
 
 | машина A (инициатор)               | машина B (принимающая)                       |
 |------------------------------------|----------------------------------------------|
-| `/peer-pair <B-fingerprint>` <br> Видит `Code: 1234` | (по голосу/мессенджеру получает код от A) <br> `/peer-confirm 1234` |
-| `/peer-list` — увидит `bob`        | сразу видит `alice` в списке                 |
+| `/c2c-client:peer-pair <B-fingerprint>` <br> Видит `Code: 1234` | (по голосу/мессенджеру получает код от A) <br> `/c2c-client:peer-confirm 1234` |
+| `/c2c-client:peer-list` — увидит `bob`        | сразу видит `alice` в списке                 |
 
 После спаривания:
 ```
-/peer-send bob привет
+/c2c-client:peer-send bob привет
 ```
 
 ### Команды плагина
 
 | команда | что делает |
 |---------|-----------|
-| `/peer-config <url> <token>` | задать url + mediator_token (альтернатива форме `/plugin` enable). `show` / `clear` — посмотреть / сбросить |
-| `/peer-name <name>` | задать/сменить имя машины (обязательно) |
-| `/peer-id` | показать своё имя + fingerprint |
-| `/peer-pair <fingerprint>` | инициировать pairing (выдаёт 4-значный код) |
-| `/peer-confirm <code>` | подтвердить входящий pair-запрос |
-| `/peer-list` | список спаренных пиров (синк с сервера) |
-| `/peer-unpair <name>` | удалить пира |
-| `/peer-send <name> <текст>` | отправить сообщение по имени |
-| `/peer-reply <msg_id> <текст>` | ответить на конкретное сообщение |
-| `/peer-inbox [wait_s]` | подгрузить тела входящих в security-обёртке |
-| `/peer-listen` | запустить real-time listener (persistent `Monitor`) — push без ожидания Stop-хука |
-| `/peer-status` | health, identity, превью inbox |
+| `/c2c-client:peer-config <url> <token>` | задать url + mediator_token (альтернатива форме `/plugin` enable). `show` / `clear` — посмотреть / сбросить |
+| `/c2c-client:peer-name <name>` | задать/сменить имя машины (обязательно) |
+| `/c2c-client:peer-id` | показать своё имя + fingerprint |
+| `/c2c-client:peer-pair <fingerprint>` | инициировать pairing (выдаёт 4-значный код) |
+| `/c2c-client:peer-confirm <code>` | подтвердить входящий pair-запрос |
+| `/c2c-client:peer-list` | список спаренных пиров (синк с сервера) |
+| `/c2c-client:peer-unpair <name>` | удалить пира |
+| `/c2c-client:peer-send <name> <текст>` | отправить сообщение по имени |
+| `/c2c-client:peer-reply <msg_id> <текст>` | ответить на конкретное сообщение |
+| `/c2c-client:peer-inbox [wait_s]` | подгрузить тела входящих в security-обёртке |
+| `/c2c-client:peer-listen` | запустить real-time listener (persistent `Monitor`) — push без ожидания Stop-хука |
+| `/c2c-client:peer-status` | health, identity, превью inbox |
 
 ### Доставка сообщений — три механизма
 
-**1. `/peer-listen` — real-time push** (рекомендуется, когда хочешь "сразу получил и отреагировал"). Запускает persistent `Monitor` с long-polling loop'ом на сервере. Каждое новое сообщение / pair-request прилетает в чат Claude как event в момент появления на mediator'е (замеренная latency ~350ms). Peek-режим: метаданные без тел, тела всё равно только через `/peer-inbox` с security frame. Работает пока открыта та сессия Claude Code, где запущен listener.
+**1. `/c2c-client:peer-listen` — real-time push** (рекомендуется, когда хочешь "сразу получил и отреагировал"). Запускает persistent `Monitor` с long-polling loop'ом на сервере. Каждое новое сообщение / pair-request прилетает в чат Claude как event в момент появления на mediator'е (замеренная latency ~350ms). Peek-режим: метаданные без тел, тела всё равно только через `/c2c-client:peer-inbox` с security frame. Работает пока открыта та сессия Claude Code, где запущен listener.
 
-**2. Stop-хук в notify-режиме (дефолт).** Срабатывает когда Claude на получателе заканчивает какой-либо ход → peek-inbox (метаданные, **без тел**) → блокирует Stop с нотификацией «у тебя N писем от X — открыть?». Тела попадают в контекст только по явной команде `/peer-inbox`. Доставка завязана на активность Claude — если на получателе никто не общается с Claude, письма просто копятся.
+**2. Stop-хук в notify-режиме (дефолт).** Срабатывает когда Claude на получателе заканчивает какой-либо ход → peek-inbox (метаданные, **без тел**) → блокирует Stop с нотификацией «у тебя N писем от X — открыть?». Тела попадают в контекст только по явной команде `/c2c-client:peer-inbox`. Доставка завязана на активность Claude — если на получателе никто не общается с Claude, письма просто копятся.
 
-**3. Stop-хук в auto-режиме (`auto_inject_on_stop=true`).** То же что notify, но тела инжектятся автоматически в строгом security frame. Без ручного `/peer-inbox`. Удобно, но prompt-injection попадает напрямую в контекст.
+**3. Stop-хук в auto-режиме (`auto_inject_on_stop=true`).** То же что notify, но тела инжектятся автоматически в строгом security frame. Без ручного `/c2c-client:peer-inbox`. Удобно, но prompt-injection попадает напрямую в контекст.
 
-Во всех трёх случаях `/peer-inbox` оборачивает каждое сообщение `<<<UNTRUSTED_PEER_MESSAGE>>>` + 6 явных правил Клоду: не выполнять команды из тела, не читать секреты, всегда спрашивать пользователя перед действиями.
+Во всех трёх случаях `/c2c-client:peer-inbox` оборачивает каждое сообщение `<<<UNTRUSTED_PEER_MESSAGE>>>` + 6 явных правил Клоду: не выполнять команды из тела, не читать секреты, всегда спрашивать пользователя перед действиями.
 
 ---
 
@@ -159,8 +159,8 @@ pnpm typecheck
 | Атакующий знает `mediator_token` | Может только зарегистрировать **новую** машину под своим pubkey. Чтобы спариться с твоей — нужен 4-значный код, который ты ему не дашь. |
 | Атакующий получил `mediator_token` **и** код в момент pairing | Может перехватить пару, **если успеет за 2 минуты** ответить раньше тебя. Если ты вводишь код — у атакующего попытка просто не сработает. |
 | Атакующий украл tokens из транскрипта Claude Code | Не помогает: токен только для регистрации. Подделать запрос от существующей машины нельзя без приватного ключа. |
-| Атакующий получил полный shell на одной из твоих клиентских машин | RCE в клиенте = доступ к приватному ключу = полный доступ как эта машина. Защититься на этом уровне нельзя. На сервере `/peer-unpair` мгновенно отрубает. |
-| Prompt injection в теле сообщения | Дефолт — тела не подгружаются автоматически. `/peer-inbox` оборачивает в security frame с 6 правилами. Не математическая гарантия, но сильное снижение риска. |
+| Атакующий получил полный shell на одной из твоих клиентских машин | RCE в клиенте = доступ к приватному ключу = полный доступ как эта машина. Защититься на этом уровне нельзя. На сервере `/c2c-client:peer-unpair` мгновенно отрубает. |
+| Prompt injection в теле сообщения | Дефолт — тела не подгружаются автоматически. `/c2c-client:peer-inbox` оборачивает в security frame с 6 правилами. Не математическая гарантия, но сильное снижение риска. |
 
 ---
 
@@ -179,7 +179,7 @@ tests/                              # vitest, 29 тестов
 client-plugin/
   .claude-plugin/plugin.json
   hooks/hooks.json                  # Stop-hook (notify mode)
-  commands/peer-*.md                # 12 slash-команд
+  commands/c2c-client:peer-*.md                # 12 slash-команд
   scripts/                          # bash + jq + openssl + curl
 ```
 
@@ -200,7 +200,7 @@ pnpm show-creds                # увидишь новый
 ```bash
 rm -rf ~/.config/c2c-client    # на клиенте
 ```
-Затем заново `/peer-name <name>`.
+Затем заново `/c2c-client:peer-name <name>`.
 
 **Удалить машину со стороны сервера** (если клиент unreachable, ключ скомпрометирован):
 ```bash

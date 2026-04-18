@@ -30,7 +30,7 @@ if [[ "$count" -gt 1 ]]; then
   echo "Multiple pending pair requests:" >&2
   echo "$pending" | jq -r '.pair_requests[] | "  request_id=\(.id)  from=\(.from_name) (\(.from_fingerprint))"' >&2
   echo "Specify by adding the request_id at the end:" >&2
-  echo "  /peer-confirm <code> <request_id>" >&2
+  echo "  /c2c-client:peer-confirm <code> <request_id>" >&2
   if [[ $# -lt 2 ]]; then exit 1; fi
   REQ_ID="$2"
 else
@@ -46,4 +46,4 @@ PEER_FP="$(echo "$resp" | jq -r .pairing.peer.fingerprint)"
 c2c::add_contact "$PEER_ID" "$PEER_NAME" "$PEER_FP"
 
 echo "✅ paired with '$PEER_NAME' ($PEER_FP)"
-echo "   You can now: /peer-send $PEER_NAME <message>"
+echo "   You can now: /c2c-client:peer-send $PEER_NAME <message>"

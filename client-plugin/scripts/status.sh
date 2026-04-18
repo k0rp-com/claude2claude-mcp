@@ -13,14 +13,14 @@ echo "identity dir:  $C2C_DIR"
 if [[ -z "${C2C_URL:-}" ]]; then
   echo
   echo "❌ url not configured. Use EITHER:"
-  echo "   • /peer-config <url> <token>"
+  echo "   • /c2c-client:peer-config <url> <token>"
   echo "   • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)"
   exit 1
 fi
 
 c2c::ensure_identity
 echo "machine_id:    $C2C_MACHINE_ID"
-echo "name:          $(c2c::name || echo '<not set — run /peer-name <name>>')"
+echo "name:          $(c2c::name || echo '<not set — run /c2c-client:peer-name <name>>')"
 
 echo
 echo "🌐 GET ${C2C_URL%/}/health"
@@ -35,7 +35,7 @@ if [[ -n "$(c2c::name || true)" ]]; then
   echo
   echo "/v1/me:"
   c2c::call GET /v1/me 2>/dev/null | jq '.machine | {id, name, fingerprint, last_seen_at}' 2>/dev/null \
-    || echo "  (could not fetch — re-register with /peer-name <name>)"
+    || echo "  (could not fetch — re-register with /c2c-client:peer-name <name>)"
   echo
   echo "📥 inbox preview:"
   c2c::call GET '/v1/inbox?peek=1' 2>/dev/null \

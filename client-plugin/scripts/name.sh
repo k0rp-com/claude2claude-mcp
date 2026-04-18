@@ -32,8 +32,8 @@ if [[ -z "$CUR" ]]; then
    fingerprint: \(.fingerprint)
 
 👉 To pair with another machine:
-   • Get the OTHER machine fingerprint via /peer-id on it
-   • Then on this machine run: /peer-pair <other-fingerprint>"'
+   • Get the OTHER machine fingerprint via /c2c-client:peer-id on it
+   • Then on this machine run: /c2c-client:peer-pair <other-fingerprint>"'
 else
   # Rename — update server.
   payload="$(jq -nc --arg n "$NEW" '{name:$n}')"

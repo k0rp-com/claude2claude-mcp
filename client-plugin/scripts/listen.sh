@@ -4,7 +4,7 @@
 # so Claude reacts the moment a new message lands — no Stop-event required.
 #
 # Emits ONE line per new inbox item. Peek mode: metadata only, bodies are
-# NEVER streamed (they still come via /peer-inbox with the security frame).
+# NEVER streamed (they still come via /c2c-client:peer-inbox with the security frame).
 #
 # Compatible with macOS bash 3.2 — no associative arrays, no `readarray`.
 

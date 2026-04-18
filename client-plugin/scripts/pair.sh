@@ -10,7 +10,7 @@ c2c::require_name
 
 if [[ $# -lt 1 ]]; then
   echo "Usage: peer-pair <other-fingerprint>" >&2
-  echo "       (4-4-4 hex, e.g. 8410-6521-b45f — get from /peer-id on the other machine)" >&2
+  echo "       (4-4-4 hex, e.g. 8410-6521-b45f — get from /c2c-client:peer-id on the other machine)" >&2
   exit 1
 fi
 
@@ -42,9 +42,9 @@ cat <<EOF
    ║  Code: $CODE                              ║
    ║  Tell the user of '$TARGET_NAME' to run: ║
    ║                                         ║
-   ║    /peer-confirm $CODE                    ║
+   ║    /c2c-client:peer-confirm $CODE                    ║
    ╚═════════════════════════════════════════╝
 
    The code is valid for $TTL_S seconds.
-   After they confirm, run:  /peer-list   (will show the new pairing).
+   After they confirm, run:  /c2c-client:peer-list   (will show the new pairing).
 EOF

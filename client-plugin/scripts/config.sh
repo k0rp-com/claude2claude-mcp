@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# /peer-config — configure mediator url + token without going through /plugin enable.
+# /c2c-client:peer-config — configure mediator url + token without going through /plugin enable.
 # Writes $C2C_DIR/config.json (mode 600). Ignored if userConfig form / C2C_* env already set.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,9 +10,9 @@ c2c::ensure_tools
 usage() {
   cat <<'EOF'
 Usage:
-  /peer-config <url> <token>   set mediator url + registration token (overwrites)
-  /peer-config show            show resolved config + where each value came from
-  /peer-config clear           delete config file
+  /c2c-client:peer-config <url> <token>   set mediator url + registration token (overwrites)
+  /c2c-client:peer-config show            show resolved config + where each value came from
+  /c2c-client:peer-config clear           delete config file
 
 Resolution order (higher wins):
   userConfig form (/plugin enable)  >  C2C_* env  >  config file  >  default
@@ -50,7 +50,7 @@ cmd_clear() {
   rm -f "$C2C_CONFIG_FILE"
   echo "✅ removed $C2C_CONFIG_FILE"
   if [[ -n "${CLAUDE_PLUGIN_OPTION_url:-}" || -n "${C2C_URL:-}" ]]; then
-    echo "   Note: url/token may still be provided by env or userConfig form — run '/peer-config show' to verify."
+    echo "   Note: url/token may still be provided by env or userConfig form — run '/c2c-client:peer-config show' to verify."
   fi
 }
 
@@ -94,10 +94,10 @@ cmd_set() {
   echo "   mediator_token: [REDACTED, ${#tok} chars]"
   if [[ -n "${CLAUDE_PLUGIN_OPTION_url:-}" && "${CLAUDE_PLUGIN_OPTION_url:-}" != "$url" ]]; then
     echo "   ⚠️  userConfig form has a different 'url' set — it will take precedence."
-    echo "      Run '/peer-config show' to see what actually resolves."
+    echo "      Run '/c2c-client:peer-config show' to see what actually resolves."
   fi
   echo
-  echo "Next: /peer-name <short-name>   (this registers the machine)"
+  echo "Next: /c2c-client:peer-name <short-name>   (this registers the machine)"
 }
 
 case "${1:-}" in

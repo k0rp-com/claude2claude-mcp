@@ -5,9 +5,9 @@ set -euo pipefail
 # Config resolution order (highest → lowest priority):
 #   1. CLAUDE_PLUGIN_OPTION_<key>  — userConfig form (Claude Code harness, /plugin enable)
 #   2. C2C_<KEY> env               — explicit shell export
-#   3. $C2C_DIR/config.json        — written by /peer-config
+#   3. $C2C_DIR/config.json        — written by /c2c-client:peer-config
 #   4. hard-coded default          — for optional fields only
-# Capture pristine env state so /peer-config show can attribute each value
+# Capture pristine env state so /c2c-client:peer-config show can attribute each value
 # to its source (userConfig form vs. explicit C2C_* env vs. file vs. default).
 __c2c_opt_url="${CLAUDE_PLUGIN_OPTION_url:-}"
 __c2c_opt_mediator_token="${CLAUDE_PLUGIN_OPTION_mediator_token:-}"
@@ -132,7 +132,7 @@ c2c::require_config() {
   if [[ -z "$C2C_URL" ]]; then
     cat <<'EOF' >&2
 ERROR: c2c-client url is not set. Configure it via EITHER path:
-  • /peer-config <url> <token>                 (writes ~/.config/c2c-client/config.json)
+  • /c2c-client:peer-config <url> <token>                 (writes ~/.config/c2c-client/config.json)
   • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)
 EOF
     exit 1
@@ -145,7 +145,7 @@ c2c::require_name() {
     cat <<EOF >&2
 ERROR: this machine has no name yet.
 Pick a short name (alphanumeric, dash, underscore, dot — up to 32 chars) so peers can address you, e.g.:
-  /peer-name laptop
+  /c2c-client:peer-name laptop
 EOF
     exit 1
   fi
@@ -203,7 +203,7 @@ c2c::call() {
     if [[ "$err" == *"unknown machine"* ]]; then
       echo "" >&2
       echo "🆕 This machine isn't registered with the mediator yet." >&2
-      echo "   Run: /peer-name <pick-a-short-name>" >&2
+      echo "   Run: /c2c-client:peer-name <pick-a-short-name>" >&2
       echo "   That will register and you can pair right after." >&2
       echo "" >&2
       return 1
@@ -217,13 +217,13 @@ c2c::call() {
   cat "$tmp"
 }
 
-# Register self with the mediator (used during /peer-name on first run).
+# Register self with the mediator (used during /c2c-client:peer-name on first run).
 c2c::register() {
   local name="$1"
   if [[ -z "$C2C_MEDIATOR_TOKEN" ]]; then
     cat <<'EOF' >&2
 ERROR: mediator_token is not set. Configure it via EITHER path:
-  • /peer-config <url> <token>
+  • /c2c-client:peer-config <url> <token>
   • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)
 EOF
     return 1

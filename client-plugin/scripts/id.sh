@@ -8,7 +8,7 @@ c2c::require_config
 
 NAME="$(c2c::name || true)"
 if [[ -z "$NAME" ]]; then
-  echo "name:        <not set — run /peer-name <name> first>"
+  echo "name:        <not set — run /c2c-client:peer-name <name> first>"
   echo "machine_id:  $C2C_MACHINE_ID"
   exit 0
 fi
@@ -23,7 +23,7 @@ if [[ -n "$fp" ]]; then
   echo "fingerprint: $fp"
   echo
   echo "👉 Give this fingerprint to the OTHER machine to pair:"
-  echo "   /peer-pair $fp"
+  echo "   /c2c-client:peer-pair $fp"
 else
   echo "fingerprint: <unknown — server unreachable or not registered yet>"
 fi

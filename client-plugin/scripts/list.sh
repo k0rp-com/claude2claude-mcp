@@ -15,7 +15,7 @@ echo "$resp" | jq '[.pairings[] | {id: .peer.id, name: .peer.name, fingerprint: 
 
 count="$(echo "$resp" | jq '.pairings | length')"
 if [[ "$count" -eq 0 ]]; then
-  echo "📭 No paired peers yet. Use /peer-pair <fingerprint> to add one."
+  echo "📭 No paired peers yet. Use /c2c-client:peer-pair <fingerprint> to add one."
   exit 0
 fi
 
