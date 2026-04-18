@@ -36,18 +36,17 @@ C2C_CONFIG_FILE="$C2C_DIR/config.json"
 c2c::_fill_from_config_file() {
   [[ -r "$C2C_CONFIG_FILE" ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  local parsed
-  if ! parsed=$(jq -r '[
-      .url // "",
-      .mediator_token // "",
-      (.stop_hook_wait_seconds // "" | tostring),
-      (.auto_inject_on_stop // "" | tostring)
-    ] | @tsv' "$C2C_CONFIG_FILE" 2>/dev/null); then
+  # Read each field separately; tab-joined @tsv + `read` collapses empty
+  # middle fields because tab is whitespace-IFS in bash.
+  jq -e . "$C2C_CONFIG_FILE" >/dev/null 2>&1 || {
     echo "WARN: $C2C_CONFIG_FILE is not valid JSON — ignoring." >&2
     return 0
-  fi
+  }
   local url tok wait auto
-  IFS=$'\t' read -r url tok wait auto <<< "$parsed"
+  url="$(jq -r '.url // ""' "$C2C_CONFIG_FILE")"
+  tok="$(jq -r '.mediator_token // ""' "$C2C_CONFIG_FILE")"
+  wait="$(jq -r '.stop_hook_wait_seconds // "" | tostring' "$C2C_CONFIG_FILE")"
+  auto="$(jq -r '.auto_inject_on_stop // "" | tostring' "$C2C_CONFIG_FILE")"
   if [[ -z "$C2C_URL"            && -n "$url"  ]]; then C2C_URL="$url"; fi
   if [[ -z "$C2C_MEDIATOR_TOKEN" && -n "$tok"  ]]; then C2C_MEDIATOR_TOKEN="$tok"; fi
   if [[ -z "$C2C_WAIT"           && -n "$wait" ]]; then C2C_WAIT="$wait"; fi
