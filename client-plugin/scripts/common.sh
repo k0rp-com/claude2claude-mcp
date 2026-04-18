@@ -2,10 +2,26 @@
 # Shared helpers: identity (ed25519), signing, contacts file, signed HTTP calls.
 set -euo pipefail
 
-C2C_URL="${CLAUDE_PLUGIN_OPTION_url:-${C2C_URL:-}}"
-C2C_MEDIATOR_TOKEN="${CLAUDE_PLUGIN_OPTION_mediator_token:-${C2C_MEDIATOR_TOKEN:-}}"
-C2C_WAIT="${CLAUDE_PLUGIN_OPTION_stop_hook_wait_seconds:-${C2C_WAIT:-10}}"
-C2C_AUTO_INJECT="${CLAUDE_PLUGIN_OPTION_auto_inject_on_stop:-${C2C_AUTO_INJECT:-false}}"
+# Config resolution order (highest → lowest priority):
+#   1. CLAUDE_PLUGIN_OPTION_<key>  — userConfig form (Claude Code harness, /plugin enable)
+#   2. C2C_<KEY> env               — explicit shell export
+#   3. $C2C_DIR/config.json        — written by /peer-config
+#   4. hard-coded default          — for optional fields only
+# Capture pristine env state so /peer-config show can attribute each value
+# to its source (userConfig form vs. explicit C2C_* env vs. file vs. default).
+__c2c_opt_url="${CLAUDE_PLUGIN_OPTION_url:-}"
+__c2c_opt_mediator_token="${CLAUDE_PLUGIN_OPTION_mediator_token:-}"
+__c2c_opt_stop_hook_wait_seconds="${CLAUDE_PLUGIN_OPTION_stop_hook_wait_seconds:-}"
+__c2c_opt_auto_inject_on_stop="${CLAUDE_PLUGIN_OPTION_auto_inject_on_stop:-}"
+__c2c_env_url="${C2C_URL:-}"
+__c2c_env_mediator_token="${C2C_MEDIATOR_TOKEN:-}"
+__c2c_env_stop_hook_wait_seconds="${C2C_WAIT:-}"
+__c2c_env_auto_inject_on_stop="${C2C_AUTO_INJECT:-}"
+
+C2C_URL="${__c2c_opt_url:-$__c2c_env_url}"
+C2C_MEDIATOR_TOKEN="${__c2c_opt_mediator_token:-$__c2c_env_mediator_token}"
+C2C_WAIT="${__c2c_opt_stop_hook_wait_seconds:-$__c2c_env_stop_hook_wait_seconds}"
+C2C_AUTO_INJECT="${__c2c_opt_auto_inject_on_stop:-$__c2c_env_auto_inject_on_stop}"
 
 C2C_DIR="${C2C_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/c2c-client}"
 C2C_IDENTITY_FILE="$C2C_DIR/identity.json"
@@ -13,6 +29,35 @@ C2C_PRIVKEY_FILE="$C2C_DIR/private_key.pem"
 C2C_PUBKEY_FILE="$C2C_DIR/public_key.pem"
 C2C_CONTACTS_FILE="$C2C_DIR/contacts.json"
 C2C_NAME_FILE="$C2C_DIR/name.txt"
+C2C_CONFIG_FILE="$C2C_DIR/config.json"
+
+# Fill unset fields from $C2C_CONFIG_FILE. Never overrides values already set
+# via userConfig form / C2C_* env.
+c2c::_fill_from_config_file() {
+  [[ -r "$C2C_CONFIG_FILE" ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local parsed
+  if ! parsed=$(jq -r '[
+      .url // "",
+      .mediator_token // "",
+      (.stop_hook_wait_seconds // "" | tostring),
+      (.auto_inject_on_stop // "" | tostring)
+    ] | @tsv' "$C2C_CONFIG_FILE" 2>/dev/null); then
+    echo "WARN: $C2C_CONFIG_FILE is not valid JSON — ignoring." >&2
+    return 0
+  fi
+  local url tok wait auto
+  IFS=$'\t' read -r url tok wait auto <<< "$parsed"
+  if [[ -z "$C2C_URL"            && -n "$url"  ]]; then C2C_URL="$url"; fi
+  if [[ -z "$C2C_MEDIATOR_TOKEN" && -n "$tok"  ]]; then C2C_MEDIATOR_TOKEN="$tok"; fi
+  if [[ -z "$C2C_WAIT"           && -n "$wait" ]]; then C2C_WAIT="$wait"; fi
+  if [[ -z "$C2C_AUTO_INJECT"    && -n "$auto" ]]; then C2C_AUTO_INJECT="$auto"; fi
+}
+c2c::_fill_from_config_file
+
+# Defaults for optional fields (applied last so any upstream source wins).
+: "${C2C_WAIT:=10}"
+: "${C2C_AUTO_INJECT:=false}"
 
 c2c::ensure_tools() {
   for tool in curl jq openssl; do
@@ -61,7 +106,14 @@ c2c::set_name() {
 
 c2c::require_config() {
   c2c::ensure_tools
-  if [[ -z "$C2C_URL" ]]; then echo "ERROR: c2c-client url not set. Run /plugin and configure." >&2; exit 1; fi
+  if [[ -z "$C2C_URL" ]]; then
+    cat <<'EOF' >&2
+ERROR: c2c-client url is not set. Configure it via EITHER path:
+  • /peer-config <url> <token>                 (writes ~/.config/c2c-client/config.json)
+  • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)
+EOF
+    exit 1
+  fi
   c2c::ensure_identity
 }
 
@@ -146,7 +198,12 @@ c2c::call() {
 c2c::register() {
   local name="$1"
   if [[ -z "$C2C_MEDIATOR_TOKEN" ]]; then
-    echo "ERROR: mediator_token not set. Run /plugin and configure c2c-client." >&2; return 1
+    cat <<'EOF' >&2
+ERROR: mediator_token is not set. Configure it via EITHER path:
+  • /peer-config <url> <token>
+  • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)
+EOF
+    return 1
   fi
   local pubkey ts nonce sigbody sig payload
   pubkey="$(cat "$C2C_PUBKEY_FILE")"

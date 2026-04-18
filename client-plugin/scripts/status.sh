@@ -12,7 +12,9 @@ echo "identity dir:  $C2C_DIR"
 
 if [[ -z "${C2C_URL:-}" ]]; then
   echo
-  echo "❌ Run /plugin and configure 'url' (and 'mediator_token' for first registration)."
+  echo "❌ url not configured. Use EITHER:"
+  echo "   • /peer-config <url> <token>"
+  echo "   • /plugin → Installed → c2c-client → Enable  (fills the userConfig form)"
   exit 1
 fi
 

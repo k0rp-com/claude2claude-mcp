@@ -52,10 +52,24 @@ pnpm typecheck
 /plugin install c2c-client@claude2claude
 ```
 
-Плагин спросит:
-- **url** — адрес сервера.
-- **mediator_token** — из `pnpm show-creds`. Используется один раз при регистрации.
-- (опционально) `stop_hook_wait_seconds` (10), `auto_inject_on_stop` (`false` — дефолт).
+### Конфигурация — любой из двух путей
+
+Нужно задать `url` (адрес сервера) и `mediator_token` (из `pnpm show-creds`, используется один раз при регистрации).
+
+**Путь A — через форму Claude Code (`userConfig`).** Форма поднимается **при enable**, не при install:
+```
+/plugin         # откроется TUI → Installed → c2c-client → Enable
+```
+Там же настраиваются опциональные `stop_hook_wait_seconds` (10) и `auto_inject_on_stop` (`false`).
+
+**Путь B — slash-командой плагина.** Если форма не поднялась, её пропустили, или хочется скриптуемо:
+```
+/peer-config <url> <token>
+/peer-config show      # посмотреть текущий resolved-конфиг (токен редактируется)
+/peer-config clear     # удалить ~/.config/c2c-client/config.json
+```
+
+Приоритет (выше = выигрывает): форма `userConfig` > env `C2C_URL`/`C2C_MEDIATOR_TOKEN` > `~/.config/c2c-client/config.json` > дефолт. `/peer-config show` показывает, из какого источника пришёл каждый параметр.
 
 Требования: `bash`, `curl`, `jq`, `openssl`, `uuidgen` (или `/proc/sys/kernel/random/uuid`).
 
@@ -86,6 +100,7 @@ pnpm typecheck
 
 | команда | что делает |
 |---------|-----------|
+| `/peer-config <url> <token>` | задать url + mediator_token (альтернатива форме `/plugin` enable). `show` / `clear` — посмотреть / сбросить |
 | `/peer-name <name>` | задать/сменить имя машины (обязательно) |
 | `/peer-id` | показать своё имя + fingerprint |
 | `/peer-pair <fingerprint>` | инициировать pairing (выдаёт 4-значный код) |
@@ -161,7 +176,7 @@ tests/                              # vitest, 29 тестов
 client-plugin/
   .claude-plugin/plugin.json
   hooks/hooks.json                  # Stop-hook (notify mode)
-  commands/peer-*.md                # 10 slash-команд
+  commands/peer-*.md                # 11 slash-команд
   scripts/                          # bash + jq + openssl + curl
 ```
 
