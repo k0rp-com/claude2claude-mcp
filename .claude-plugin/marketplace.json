@@ -1,0 +1,13 @@
+{
+  "name": "claude2claude",
+  "owner": { "name": "claude2claude-mcp" },
+  "description": "Marketplace for the claude2claude client plugin (lets one Claude Code session talk to another via the mediator server in this repo).",
+  "plugins": [
+    {
+      "name": "c2c-client",
+      "source": "./client-plugin",
+      "description": "Send/receive messages between two paired Claude Code sessions on different machines.",
+      "version": "0.1.0"
+    }
+  ]
+}

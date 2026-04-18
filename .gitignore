@@ -1,0 +1,14 @@
+node_modules/
+.pnpm-store/
+.env
+.config/
+.uploads/
+logs/
+INSTALL_INSTRUCTIONS.txt
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+dist/
+.DS_Store

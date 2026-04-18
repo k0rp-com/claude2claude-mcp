@@ -1,0 +1,28 @@
+{
+  "name": "c2c-client",
+  "version": "0.2.0",
+  "description": "Pair two Claude Code sessions across machines via the c2c mediator. End-to-end ed25519-signed requests; pair-by-code (4-digit) flow; per-machine identity; nothing in the channel can be forged without your machine's private key.",
+  "author": { "name": "claude2claude-mcp" },
+  "license": "MIT",
+  "keywords": ["claude", "communication", "peer", "ed25519", "pairing"],
+  "userConfig": {
+    "url": {
+      "description": "Base URL of the c2c mediator server, e.g. https://example.conveyor.generated.cloud",
+      "sensitive": false
+    },
+    "mediator_token": {
+      "description": "Mediator token from the server's `pnpm show-creds`. Used ONLY to register this machine on first run; not used for actual auth (which is per-machine ed25519 signature).",
+      "sensitive": true
+    },
+    "stop_hook_wait_seconds": {
+      "description": "How long the Stop hook long-polls for incoming messages / pair-requests. Default 10.",
+      "sensitive": false,
+      "default": "10"
+    },
+    "auto_inject_on_stop": {
+      "description": "Default 'false' (recommended): Stop hook only NOTIFIES — message bodies are NOT loaded into the session until you run /peer-inbox. Set 'true' to auto-load.",
+      "sensitive": false,
+      "default": "false"
+    }
+  }
+}
