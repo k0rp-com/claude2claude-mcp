@@ -95,10 +95,17 @@ c2c::name() {
   if [[ -f "$C2C_NAME_FILE" ]]; then cat "$C2C_NAME_FILE"; fi
 }
 
+c2c::valid_name() {
+  # 1-32 code points; any Unicode letter/digit, plus . _ - (no whitespace, no emoji).
+  local n="$1"
+  [[ -n "$n" ]] || return 1
+  printf '%s' "$n" | jq -Rse '. | test("^[\\p{L}\\p{N}._-]{1,32}$")' 2>/dev/null | grep -qx 'true'
+}
+
 c2c::set_name() {
   local n="$1"
-  if ! [[ "$n" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; then
-    echo "ERROR: name must be 1-32 chars [A-Za-z0-9._-]" >&2; return 1
+  if ! c2c::valid_name "$n"; then
+    echo "ERROR: name must be 1-32 chars: letters (any script), digits, or . _ -" >&2; return 1
   fi
   printf '%s' "$n" > "$C2C_NAME_FILE"
   chmod 600 "$C2C_NAME_FILE" 2>/dev/null || true

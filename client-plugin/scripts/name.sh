@@ -15,8 +15,8 @@ fi
 
 c2c::require_config
 NEW="$1"
-if ! [[ "$NEW" =~ ^[A-Za-z0-9._-]{1,32}$ ]]; then
-  echo "ERROR: name must be 1-32 chars, allowed: A-Za-z0-9._-" >&2
+if ! c2c::valid_name "$NEW"; then
+  echo "ERROR: name must be 1-32 chars: letters (any script), digits, or . _ -" >&2
   exit 1
 fi
 

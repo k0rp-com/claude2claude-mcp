@@ -32,6 +32,24 @@ describe('register', () => {
     expect(r.status).toBe(400);
   });
 
+  it('accepts non-Latin names (Cyrillic, CJK, accents)', async () => {
+    for (const name of ['алиса', '張三', 'café']) {
+      const { app } = makeApp();
+      const m = newTestMachine(name);
+      const r = await registerMachine(app, m);
+      expect(r.status, `name=${name}`).toBe(201);
+      const data = (await r.json()) as { machine: { name: string } };
+      expect(data.machine.name).toBe(name);
+    }
+  });
+
+  it('rejects emoji in name (not a letter)', async () => {
+    const { app } = makeApp();
+    const m = newTestMachine('bob😀');
+    const r = await registerMachine(app, m);
+    expect(r.status).toBe(400);
+  });
+
   it('rejects when signature does not match pubkey', async () => {
     const { app } = makeApp();
     const m = newTestMachine();

@@ -13,7 +13,7 @@ const log = makeLogger(config.logLevel);
 const MAX_BODY_LEN = 64 * 1024;
 const MAX_UNACKED_PER_RECIPIENT = 500;
 const MAX_NAME_LEN = 32;
-const NAME_RE = /^[A-Za-z0-9._-]{1,32}$/;
+const NAME_RE = /^[\p{L}\p{N}._-]{1,32}$/u;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FP_RE = /^[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}$/i;
 const NONCE_RE = /^[0-9a-f]{32}$/i;
@@ -103,7 +103,7 @@ export function buildApp(db: Db) {
 
     const schema = z.object({
       id: z.string().regex(UUID_RE),
-      name: z.string().regex(NAME_RE, 'name must be 1-32 chars [A-Za-z0-9._-]'),
+      name: z.string().regex(NAME_RE, 'name must be 1-32 chars: letters (any script), digits, or . _ -'),
       public_key_pem: z.string().min(80).max(4096),
       ts: z.number().int(),
       nonce: z.string().regex(NONCE_RE),
