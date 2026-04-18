@@ -1,10 +1,18 @@
 {
   "name": "c2c-client",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Pair two Claude Code sessions across machines via the c2c mediator. End-to-end ed25519-signed requests; pair-by-code (4-digit) flow; per-machine identity; nothing in the channel can be forged without your machine's private key.",
-  "author": { "name": "claude2claude-mcp" },
+  "author": {
+    "name": "claude2claude-mcp"
+  },
   "license": "MIT",
-  "keywords": ["claude", "communication", "peer", "ed25519", "pairing"],
+  "keywords": [
+    "claude",
+    "communication",
+    "peer",
+    "ed25519",
+    "pairing"
+  ],
   "userConfig": {
     "url": {
       "description": "Base URL of the c2c mediator server, e.g. https://example.conveyor.generated.cloud",
