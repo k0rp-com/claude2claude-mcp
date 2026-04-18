@@ -18,6 +18,14 @@ source "$SCRIPT_DIR/common.sh"
 c2c::ensure_tools
 c2c::ensure_identity
 
+# Liveness marker — Stop hook skips its own inbox-gating block while this
+# listener is running, otherwise the two peek the same unacked inbox and loop.
+mkdir -p "$C2C_DIR"
+C2C_LISTENER_PID_FILE="$C2C_DIR/listener.pid"
+echo "$$" > "$C2C_LISTENER_PID_FILE"
+# shellcheck disable=SC2064
+trap "rm -f '$C2C_LISTENER_PID_FILE'" EXIT INT TERM
+
 # Server caps wait at maxLongPollSeconds (default 30s). Stay a bit under.
 WAIT=25
 since=0

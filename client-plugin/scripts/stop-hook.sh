@@ -22,6 +22,19 @@ command -v openssl >/dev/null 2>&1 || exit 0
 
 c2c::ensure_identity
 
+# If /c2c-client:peer-listen is running, it already surfaces every new message
+# as a chat event. Gating Stop here would just loop with the listener (both
+# peek the same unacked inbox). Trust the listener and let Stop proceed.
+listener_pid_file="$C2C_DIR/listener.pid"
+if [[ -f "$listener_pid_file" ]]; then
+  listener_pid="$(cat "$listener_pid_file" 2>/dev/null || echo '')"
+  if [[ "$listener_pid" =~ ^[0-9]+$ ]] && kill -0 "$listener_pid" 2>/dev/null; then
+    exit 0
+  fi
+  # stale marker — clean it up and fall through to normal gating.
+  rm -f "$listener_pid_file" 2>/dev/null || true
+fi
+
 mode="$C2C_AUTO_INJECT"
 [[ "$mode" == "true" || "$mode" == "auto" ]] && mode="auto" || mode="notify"
 

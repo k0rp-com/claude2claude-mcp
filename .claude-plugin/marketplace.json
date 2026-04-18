@@ -9,7 +9,7 @@
       "name": "c2c-client",
       "source": "./client-plugin",
       "description": "Send/receive messages between two paired Claude Code sessions on different machines.",
-      "version": "0.2.7"
+      "version": "0.2.8"
     }
   ]
 }
