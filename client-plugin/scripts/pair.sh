@@ -32,7 +32,7 @@ resp="$(c2c::call POST /v1/pair-request "$payload")" || exit 1
 
 CODE="$(echo "$resp" | jq -r .code)"
 EXPIRES_MS="$(echo "$resp" | jq -r .pair_request.expires_at)"
-NOW_MS="$(date +%s%3N)"
+NOW_MS="$(c2c::now_ms)"
 TTL_S=$(( (EXPIRES_MS - NOW_MS) / 1000 ))
 
 cat <<EOF

@@ -65,6 +65,22 @@ c2c::ensure_tools() {
   done
 }
 
+# Current time in ms as a bare integer.
+# GNU date supports `%3N`; BSD/macOS doesn't and leaks `%3N` literal into the
+# output, which then breaks jq --argjson. Fall back to python3/perl/seconds.
+c2c::now_ms() {
+  local t
+  t="$(date +%s%3N 2>/dev/null)"
+  if [[ "$t" =~ ^[0-9]{13,}$ ]]; then printf '%s' "$t"; return 0; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import time; print(int(time.time()*1000))' && return 0
+  fi
+  if command -v perl >/dev/null 2>&1; then
+    perl -MTime::HiRes=time -e 'printf "%d\n", int(time()*1000)' && return 0
+  fi
+  printf '%s000' "$(date +%s)"
+}
+
 c2c::generate_uuid_v4() {
   if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'; return; fi
   if [[ -r /proc/sys/kernel/random/uuid ]]; then cat /proc/sys/kernel/random/uuid; return; fi
@@ -163,7 +179,7 @@ c2c::call() {
   local method="$1" path="$2" body="${3:-}"
   local url="${C2C_URL%/}${path}"
   local ts nonce sig
-  ts="$(date +%s%3N)"
+  ts="$(c2c::now_ms)"
   nonce="$(head -c 16 /dev/urandom | xxd -p -c 32)"
   sig="$(c2c::canonical "$method" "$path" "$ts" "$nonce" "$body" | c2c::sign_b64)"
 
@@ -214,7 +230,7 @@ EOF
   fi
   local pubkey ts nonce sigbody sig payload
   pubkey="$(cat "$C2C_PUBKEY_FILE")"
-  ts="$(date +%s%3N)"
+  ts="$(c2c::now_ms)"
   nonce="$(head -c 16 /dev/urandom | xxd -p -c 32)"
   payload="$(jq -nc --arg id "$C2C_MACHINE_ID" --arg name "$name" --arg pk "$pubkey" --argjson ts "$ts" --arg n "$nonce" \
     '{id:$id, name:$name, public_key_pem:$pk, ts:$ts, nonce:$n}')"
