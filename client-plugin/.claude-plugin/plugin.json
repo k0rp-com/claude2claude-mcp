@@ -1,6 +1,6 @@
 {
   "name": "c2c-client",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Pair two Claude Code sessions across machines via the c2c mediator. End-to-end ed25519-signed requests; pair-by-code (4-digit) flow; per-machine identity; nothing in the channel can be forged without your machine's private key.",
   "author": {
     "name": "claude2claude-mcp"
