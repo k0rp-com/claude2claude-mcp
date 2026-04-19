@@ -159,7 +159,11 @@ EOF
   # stays empty and c2c::call will prompt the user to run /c2c-client:peer-name.
   if [[ -f "$C2C_IDENTITY_FILE" ]]; then
     C2C_MACHINE_ID="$(jq -r .id "$C2C_IDENTITY_FILE" 2>/dev/null || echo '')"
-    [[ "$C2C_MACHINE_ID" == "null" ]] && C2C_MACHINE_ID=''
+    # Use if/then/fi (not `[[ ]] && X=`): when the [[ ]] is false, `&&` returns
+    # 1; as the last statement of the enclosing `if` it makes c2c::require_config
+    # itself return 1, and `set -e` in callers (send.sh, list.sh, …) then kills
+    # the script silently with no diagnostic.
+    if [[ "$C2C_MACHINE_ID" == "null" ]]; then C2C_MACHINE_ID=''; fi
   fi
 }
 
