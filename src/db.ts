@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { EventEmitter } from 'node:events';
 import { randomUUID, createHash } from 'node:crypto';
-import { fingerprint as fpOf } from './crypto.js';
+import { fingerprint as fpOf, idFromPubkey } from './crypto.js';
 
 export type MessageKind = 'request' | 'reply' | 'notice';
 
@@ -48,7 +48,7 @@ export interface Message {
 
 export interface Db {
   // Machines
-  registerMachine(args: { id: string; pubkeyPem: string; name: string }): Machine;
+  registerMachine(args: { pubkeyPem: string; name: string }): Machine;
   updateMachineName(id: string, name: string): Machine | null;
   getMachine(id: string): Machine | null;
   getMachineByFingerprint(fp: string): Machine | null;
@@ -69,7 +69,7 @@ export interface Db {
   removePairing(a: string, b: string): boolean;
 
   // Messages
-  send(args: { fromId: string; toId: string; kind: MessageKind; body: string; replyTo?: string | null }): Message;
+  send(args: { fromId: string; toId: string; kind: MessageKind; body: string; replyTo?: string | null; unackedCap?: number }): Message;
   inbox(toId: string, sinceCreatedAt?: number): Message[];
   inboxPeek(toId: string, sinceCreatedAt?: number): Array<Pick<Message, 'id' | 'from_id' | 'kind' | 'thread_id' | 'created_at'>>;
   countUnacked(toId: string): number;
@@ -207,17 +207,18 @@ export function openDb(path: string): Db {
     events,
 
     // ── machines
-    registerMachine({ id, pubkeyPem, name }) {
+    registerMachine({ pubkeyPem, name }) {
       const fp = fpOf(pubkeyPem);
       const existing = machGetByFp.get(fp) as Machine | undefined;
       if (existing) {
-        // Same key registered before. If the id matches, just update the name; else conflict.
-        if (existing.id !== id) {
-          throw new Error('public key already registered to a different machine id');
-        }
+        // Same key already registered — treat as rename (idempotent register).
+        // Keep whatever id was previously stored (supports legacy client-chosen ids).
         machUpdateName.run(name, existing.id);
         return machGetById.get(existing.id) as Machine;
       }
+      // New key → derive id deterministically from pubkey. This removes the
+      // TOFU race where a mediator-token holder could claim an arbitrary id.
+      const id = idFromPubkey(pubkeyPem);
       machInsert.run(id, pubkeyPem, name, fp, Date.now());
       return machGetById.get(id) as Machine;
     },
@@ -309,7 +310,7 @@ export function openDb(path: string): Db {
     },
 
     // ── messages
-    send({ fromId, toId, kind, body, replyTo = null }) {
+    send({ fromId, toId, kind, body, replyTo = null, unackedCap }) {
       const id = randomUUID();
       const now = Date.now();
       let threadId: string | null = null;
@@ -322,7 +323,16 @@ export function openDb(path: string): Db {
         threadId = parent.thread_id;
       }
       if (!threadId) threadId = id;
-      msgInsert.run(id, threadId, fromId, toId, kind, body, replyTo, now);
+      // Enforce the unacked cap and insert atomically so concurrent senders
+      // cannot both pass the check and then both insert (H-4).
+      const txn = sqlite.transaction(() => {
+        if (unackedCap !== undefined) {
+          const n = (msgCountUnacked.get(toId) as { n: number }).n;
+          if (n >= unackedCap) throw new Error('inbox_full');
+        }
+        msgInsert.run(id, threadId!, fromId, toId, kind, body, replyTo, now);
+      });
+      txn();
       const msg = msgGet.get(id) as Message;
       events.emit(`inbox:${toId}`, msg);
       return msg;

@@ -38,12 +38,9 @@ TTL_S=$(( (EXPIRES_MS - NOW_MS) / 1000 ))
 cat <<EOF
 🔑 Pair request sent to '$TARGET_NAME' ($FP_LC).
 
-   ╔═════════════════════════════════════════╗
-   ║  Code: $CODE                              ║
-   ║  Tell the user of '$TARGET_NAME' to run: ║
-   ║                                         ║
-   ║    /c2c-client:peer-confirm $CODE                    ║
-   ╚═════════════════════════════════════════╝
+   Code:  $CODE
+   Tell the user of '$TARGET_NAME' to run:
+       /c2c-client:peer-confirm $CODE
 
    The code is valid for $TTL_S seconds.
    After they confirm, run:  /c2c-client:peer-list   (will show the new pairing).

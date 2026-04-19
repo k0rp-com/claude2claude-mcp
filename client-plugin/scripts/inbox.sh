@@ -9,7 +9,9 @@ source "$SCRIPT_DIR/common.sh"
 c2c::require_config
 c2c::require_name
 
+# Collapse the empty-string arg that results from `"$ARGUMENTS"` with no user input.
 WAIT="${1:-0}"
+[[ -z "$WAIT" ]] && WAIT=0
 [[ "$WAIT" =~ ^[0-9]+$ ]] || { echo "ERROR: wait must be integer" >&2; exit 1; }
 
 resp="$(c2c::call GET "/v1/inbox?wait=$WAIT")" || exit 1

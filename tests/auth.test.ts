@@ -56,15 +56,15 @@ describe('register', () => {
     const other = newTestMachine();
     const ts = Date.now();
     const nonce = randomBytes(16).toString('hex');
-    const bodyObj = { id: m.id, name: m.name, public_key_pem: m.publicKeyPem, ts, nonce };
+    const bodyWithEmptySig = { name: m.name, public_key_pem: m.publicKeyPem, ts, nonce, signature: '' };
     // Signed with other's key but claiming m.publicKeyPem
     const sig = signRequest(other.privateKeyPem, {
-      method: 'POST', path: '/v1/register', timestampMs: ts, nonce, body: JSON.stringify(bodyObj),
+      method: 'POST', path: '/v1/register', timestampMs: ts, nonce, body: JSON.stringify(bodyWithEmptySig),
     });
     const r = await app.request('/v1/register', {
       method: 'POST',
       headers: { Authorization: `Bearer ${process.env.MEDIATOR_TOKEN}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...bodyObj, signature: sig }),
+      body: JSON.stringify({ ...bodyWithEmptySig, signature: sig }),
     });
     expect(r.status).toBe(400);
   });
@@ -77,13 +77,15 @@ describe('signed-request middleware', () => {
     expect(r.status).toBe(400);
   });
 
-  it('rejects requests for unknown machine', async () => {
+  it('rejects requests for unknown machine without leaking existence', async () => {
     const { app } = makeApp();
     const ghost = newTestMachine();
     const r = await authedRequest(app, ghost, 'GET', '/v1/me');
     expect(r.status).toBe(401);
     const d = (await r.json()) as { error: string };
-    expect(d.error).toMatch(/unknown machine/);
+    // Generic body (M-4) — detail is in the X-C2C-Auth-Reason header for local clients.
+    expect(d.error).toBe('unauthenticated');
+    expect(r.headers.get('x-c2c-auth-reason')).toBe('unregistered');
   });
 
   it('rejects bad signature', async () => {

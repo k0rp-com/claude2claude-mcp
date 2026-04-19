@@ -37,6 +37,18 @@ export function fingerprint(publicKeyPem: string): string {
   return `${h.slice(0, 4)}-${h.slice(4, 8)}-${h.slice(8, 12)}`;
 }
 
+/** Deterministic UUIDv4-format machine id derived from the SPKI DER of the public key.
+ *  Used by /v1/register to bind id ↔ pubkey cryptographically. */
+export function idFromPubkey(publicKeyPem: string): string {
+  const der = publicKeyFromPem(publicKeyPem).export({ type: 'spki', format: 'der' }) as Buffer;
+  const h = createHash('sha256').update(der).digest();
+  const b = Buffer.from(h.subarray(0, 16));
+  b[6] = (b[6]! & 0x0f) | 0x40; // version 4 bits
+  b[8] = (b[8]! & 0x3f) | 0x80; // variant bits
+  const x = b.toString('hex');
+  return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+}
+
 export interface SignedRequestPayload {
   method: string;     // upper-case HTTP verb
   path: string;       // raw path with query string

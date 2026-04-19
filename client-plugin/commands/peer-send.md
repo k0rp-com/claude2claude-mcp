@@ -4,4 +4,4 @@ argument-hint: <peer-name> <message>
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/send.sh:*)
 ---
 
-!`${CLAUDE_PLUGIN_ROOT}/scripts/send.sh $ARGUMENTS`
+!`${CLAUDE_PLUGIN_ROOT}/scripts/send.sh "$ARGUMENTS"`

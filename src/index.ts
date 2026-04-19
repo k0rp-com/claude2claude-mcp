@@ -30,12 +30,11 @@ const server = serve(
       port: info.port,
       db: config.dbPath,
       // NOTE: never log tokens or project names. The boot result is intentionally not echoed.
-      install_file: boot.installFilePath,
       tokens_generated: boot.generatedToken,
     });
     if (boot.generatedToken) {
       log.info('server.first_boot', {
-        msg: `Fresh tokens generated. View install instructions: pnpm show-creds  (file: ${boot.installFilePath})`,
+        msg: 'Fresh MEDIATOR_TOKEN generated and printed to stderr. Re-reveal via: pnpm show-creds',
       });
     }
   },

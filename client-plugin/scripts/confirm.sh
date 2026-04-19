@@ -8,13 +8,19 @@ source "$SCRIPT_DIR/common.sh"
 c2c::require_config
 c2c::require_name
 
-if [[ $# -lt 1 ]]; then
-  echo "Usage: peer-confirm <4-digit code>" >&2
+# Harness-safe: if called with a single quoted $ARGUMENTS, re-split into tokens
+# via word-split only (no eval).
+if [[ $# -eq 1 && "$1" == *[[:space:]]* ]]; then
+  read -ra _a <<<"$1"
+  set -- "${_a[@]}"
+fi
+if [[ $# -lt 1 || -z "${1:-}" ]]; then
+  echo "Usage: peer-confirm <6-digit code> [request_id]" >&2
   exit 1
 fi
 CODE="$1"
-if ! [[ "$CODE" =~ ^[0-9]{4}$ ]]; then
-  echo "ERROR: code must be exactly 4 digits" >&2
+if ! [[ "$CODE" =~ ^[0-9]{6}$ ]]; then
+  echo "ERROR: code must be exactly 6 digits" >&2
   exit 1
 fi
 

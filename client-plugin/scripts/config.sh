@@ -7,6 +7,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 c2c::ensure_tools
 
+# Harness-safe: a single quoted $ARGUMENTS is re-split via pure word-splitting
+# (no eval), preserving positional-subcommand dispatch below.
+if [[ $# -eq 1 && "$1" == *[[:space:]]* ]]; then
+  read -ra _a <<<"$1"
+  set -- "${_a[@]}"
+fi
+# Collapse an empty-string arg (result of `"$ARGUMENTS"` with no user input).
+if [[ $# -eq 1 && -z "$1" ]]; then set --; fi
+
 usage() {
   cat <<'EOF'
 Usage:

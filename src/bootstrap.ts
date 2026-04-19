@@ -1,7 +1,9 @@
 // Auto-creates .env on first start with a single MEDIATOR_TOKEN secret.
-// Never prints secrets to stdout. Writes INSTALL_INSTRUCTIONS.txt mode 0400.
+// The token is written to .env (mode 0600) only. It is NEVER written to a
+// separate, mode-0400 "install instructions" file — that left a plaintext
+// copy of the mediator token in the working directory indefinitely.
 
-import { existsSync, readFileSync, writeFileSync, chmodSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, chmodSync, unlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 
@@ -39,8 +41,11 @@ function serializeEnv(obj: Record<string, string>): string {
   return lines.join('\n') + '\n';
 }
 
-function renderInstall(r: BootstrapResult): string {
+function renderInstall(r: BootstrapResult, opts: { redactToken?: boolean } = {}): string {
   const bar = '═'.repeat(72);
+  const tokenLine = opts.redactToken
+    ? '    mediator_token = <printed once to stderr on first server start — see `pnpm show-creds`>'
+    : `    mediator_token = ${r.mediatorToken}`;
   return [
     bar,
     '  c2c-client install — run on EVERY machine you want to be reachable',
@@ -52,7 +57,7 @@ function renderInstall(r: BootstrapResult): string {
     '',
     '  When asked, paste:',
     `    url            = ${r.publicUrl}`,
-    `    mediator_token = ${r.mediatorToken}`,
+    tokenLine,
     '',
     '  Then on each machine, in Claude:',
     '    /c2c-client:peer-name <a-short-name-for-this-machine>',
@@ -129,9 +134,20 @@ export function ensureEnv(cwd = process.cwd(), opts: { marketplaceUrl?: string }
     marketplaceUrl: opts.marketplaceUrl,
   };
 
+  // Best-effort cleanup of any legacy install file left on disk from older
+  // versions — it contained the mediator token in plaintext.
+  if (existsSync(installFilePath)) {
+    try { unlinkSync(installFilePath); } catch { /* */ }
+  }
+
   if (generated) {
-    writeFileSync(installFilePath, renderInstall(result), { mode: 0o400 });
-    try { chmodSync(installFilePath, 0o400); } catch { /* */ }
+    // Print the token exactly once, to stderr, where it is visible to the
+    // operator launching the server but not captured by `pnpm start > log`.
+    process.stderr.write('\n');
+    process.stderr.write(renderInstall(result));
+    process.stderr.write('\n');
+    process.stderr.write('  ⚠ Save MEDIATOR_TOKEN now — it will not be printed again.\n');
+    process.stderr.write('    Re-reveal via: `pnpm show-creds` (reads from .env).\n\n');
   }
 
   return result;

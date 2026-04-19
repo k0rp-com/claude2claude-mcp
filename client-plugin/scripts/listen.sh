@@ -18,6 +18,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/common.sh"
 
 c2c::ensure_tools
+# Silently no-op if not yet registered — SessionStart auto-arms this hook,
+# and new installs reach this point before the user has run peer-name.
+if [[ ! -f "$C2C_IDENTITY_FILE" ]]; then
+  echo "ℹ️  peer-listen: not registered yet — run /c2c-client:peer-name <name> first"
+  exit 0
+fi
 c2c::ensure_identity
 
 # Mutex on the pid file: a second listener on the same identity would race
@@ -48,10 +54,19 @@ emit_messages() {
   # Emit one security-framed block covering all messages fetched in this cycle.
   # Monitor batches stdout within 200ms into a single notification, so a
   # single multi-line print becomes one chat event.
+  #
+  # The frame terminator embeds a per-invocation random nonce so a malicious
+  # peer cannot inject a literal "<<<END_UNTRUSTED_PEER_MESSAGE>>>" followed
+  # by fake "trusted" instructions and escape the frame.
   local rows="$1"
+  local frame_nonce begin_tag end_tag
+  frame_nonce="$(head -c 16 /dev/urandom | xxd -p -c 32)"
+  begin_tag="<<<UNTRUSTED_PEER_MESSAGE-${frame_nonce}"
+  end_tag="<<<END_UNTRUSTED_PEER_MESSAGE-${frame_nonce}>>>"
   printf '%s\n\n' "$SECURITY_INTRO"
-  jq -r '.[] |
-    "<<<UNTRUSTED_PEER_MESSAGE from_name=\(.from_name) from_id=\(.from_id) id=\(.id) kind=\(.kind) thread=\(.thread_id)\(if .reply_to then " reply_to=\(.reply_to)" else "" end)>>>\n\(.body)\n<<<END_UNTRUSTED_PEER_MESSAGE>>>\n"' <<<"$rows"
+  printf 'Frame delimiters for this batch: %s …>>> and %s\n\n' "$begin_tag" "$end_tag"
+  jq -r --arg bt "$begin_tag" --arg et "$end_tag" '.[] |
+    "\($bt) from_name=\(.from_name) from_id=\(.from_id) id=\(.id) kind=\(.kind) thread=\(.thread_id)\(if .reply_to then " reply_to=\(.reply_to)" else "" end)>>>\n\(.body)\n\($et)\n"' <<<"$rows"
 }
 
 emit_pair() {

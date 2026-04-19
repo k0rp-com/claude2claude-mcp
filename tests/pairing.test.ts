@@ -16,7 +16,7 @@ describe('pair-request + confirm', () => {
     const r = await authedRequest(app, a, 'POST', '/v1/pair-request', { to_id: b.id });
     expect(r.status).toBe(201);
     const data = (await r.json()) as { code: string; pair_request: { id: string } };
-    expect(data.code).toMatch(/^\d{4}$/);
+    expect(data.code).toMatch(/^\d{6}$/);
 
     const c = await authedRequest(app, b, 'POST', '/v1/pair-confirm', {
       request_id: data.pair_request.id, code: data.code,
@@ -37,7 +37,7 @@ describe('pair-request + confirm', () => {
     const { app, a, b } = await setupTwo();
     const r = await authedRequest(app, a, 'POST', '/v1/pair-request', { to_id: b.id });
     const data = (await r.json()) as { code: string; pair_request: { id: string } };
-    const wrong = data.code === '0000' ? '1111' : '0000';
+    const wrong = data.code === '000000' ? '111111' : '000000';
     const c = await authedRequest(app, b, 'POST', '/v1/pair-confirm', {
       request_id: data.pair_request.id, code: wrong,
     });
@@ -53,7 +53,7 @@ describe('pair-request + confirm', () => {
     const { app, a, b } = await setupTwo();
     const r = await authedRequest(app, a, 'POST', '/v1/pair-request', { to_id: b.id });
     const data = (await r.json()) as { code: string; pair_request: { id: string } };
-    const wrong = data.code === '9999' ? '1111' : '9999';
+    const wrong = data.code === '999999' ? '111111' : '999999';
     for (let i = 0; i < 3; i++) {
       await authedRequest(app, b, 'POST', '/v1/pair-confirm', { request_id: data.pair_request.id, code: wrong });
     }

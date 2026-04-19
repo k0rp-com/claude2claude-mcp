@@ -84,20 +84,44 @@ c2c::generate_uuid_v4() {
     "${hex:20:12}"
 }
 
-c2c::ensure_identity() {
-  if [[ -f "$C2C_IDENTITY_FILE" && -f "$C2C_PRIVKEY_FILE" && -f "$C2C_PUBKEY_FILE" ]]; then
-    C2C_MACHINE_ID="$(jq -r .id "$C2C_IDENTITY_FILE")"
-    return
-  fi
+# Ensure the ed25519 key pair exists on disk. Does NOT fetch or create the
+# machine id — that is assigned by the server at registration and persisted
+# in $C2C_IDENTITY_FILE by c2c::register.
+c2c::ensure_keys() {
+  if [[ -f "$C2C_PRIVKEY_FILE" && -f "$C2C_PUBKEY_FILE" ]]; then return; fi
   mkdir -p "$C2C_DIR"; chmod 700 "$C2C_DIR" 2>/dev/null || true
-  C2C_MACHINE_ID="$(c2c::generate_uuid_v4)"
   openssl genpkey -algorithm Ed25519 -out "$C2C_PRIVKEY_FILE" 2>/dev/null
   chmod 600 "$C2C_PRIVKEY_FILE" 2>/dev/null || true
   openssl pkey -in "$C2C_PRIVKEY_FILE" -pubout -out "$C2C_PUBKEY_FILE" 2>/dev/null
   chmod 644 "$C2C_PUBKEY_FILE" 2>/dev/null || true
-  jq -n --arg id "$C2C_MACHINE_ID" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+}
+
+# Ensure we have a fully registered identity (keys + server-assigned id).
+# Callers that need to make authenticated calls MUST succeed here before
+# signing any request — X-Machine-ID is read from the identity file.
+c2c::ensure_identity() {
+  c2c::ensure_keys
+  if [[ -f "$C2C_IDENTITY_FILE" ]]; then
+    C2C_MACHINE_ID="$(jq -r .id "$C2C_IDENTITY_FILE" 2>/dev/null || echo '')"
+    if [[ -n "$C2C_MACHINE_ID" && "$C2C_MACHINE_ID" != "null" ]]; then return; fi
+  fi
+  cat <<'EOF' >&2
+ERROR: this machine has no registered identity yet.
+   Run: /c2c-client:peer-name <pick-a-short-name>
+   That will register with the mediator and persist the server-assigned id.
+EOF
+  exit 1
+}
+
+# Write the server-assigned id to the identity file. Only c2c::register
+# should call this. Mode 0600 because the file pins our machine identity.
+c2c::_persist_identity() {
+  local id="$1"
+  mkdir -p "$C2C_DIR"
+  jq -n --arg id "$id" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{id:$id, created_at:$ts}' > "$C2C_IDENTITY_FILE"
   chmod 600 "$C2C_IDENTITY_FILE" 2>/dev/null || true
+  C2C_MACHINE_ID="$id"
 }
 
 c2c::name() {
@@ -130,7 +154,13 @@ ERROR: c2c-client url is not set. Configure it via EITHER path:
 EOF
     exit 1
   fi
-  c2c::ensure_identity
+  c2c::ensure_keys
+  # Load the server-assigned id if we already have one — otherwise C2C_MACHINE_ID
+  # stays empty and c2c::call will prompt the user to run /c2c-client:peer-name.
+  if [[ -f "$C2C_IDENTITY_FILE" ]]; then
+    C2C_MACHINE_ID="$(jq -r .id "$C2C_IDENTITY_FILE" 2>/dev/null || echo '')"
+    [[ "$C2C_MACHINE_ID" == "null" ]] && C2C_MACHINE_ID=''
+  fi
 }
 
 c2c::require_name() {
@@ -170,19 +200,30 @@ c2c::canonical() {
 # c2c::call METHOD PATH [JSON_BODY]
 c2c::call() {
   local method="$1" path="$2" body="${3:-}"
+  if [[ -z "${C2C_MACHINE_ID:-}" ]]; then
+    cat <<'EOF' >&2
+
+🆕 This machine isn't registered with the mediator yet.
+   Run: /c2c-client:peer-name <pick-a-short-name>
+   That will register and you can pair right after.
+EOF
+    return 1
+  fi
   local url="${C2C_URL%/}${path}"
   local ts nonce sig
   ts="$(c2c::now_ms)"
   nonce="$(head -c 16 /dev/urandom | xxd -p -c 32)"
   sig="$(c2c::canonical "$method" "$path" "$ts" "$nonce" "$body" | c2c::sign_b64)"
 
-  local tmp; tmp="$(mktemp)"; trap 'rm -f "$tmp"' RETURN
+  local tmp hdrs; tmp="$(mktemp)"; hdrs="$(mktemp)"
+  trap 'rm -f "$tmp" "$hdrs"' RETURN
   local -a curl_args=(
     -sS -X "$method"
     -H "X-Machine-ID: ${C2C_MACHINE_ID}"
     -H "X-Timestamp: ${ts}"
     -H "X-Nonce: ${nonce}"
     -H "X-Signature: ${sig}"
+    -D "$hdrs"
     -o "$tmp" -w '%{http_code}' --max-time 60
   )
   if [[ -n "$body" ]]; then
@@ -192,13 +233,17 @@ c2c::call() {
   local code; code="$(curl "${curl_args[@]}" "$url")" || { echo "ERROR: curl failed reaching $url" >&2; return 2; }
 
   if [[ "$code" == "401" ]]; then
-    local err; err="$(jq -r '.error // ""' "$tmp" 2>/dev/null || echo "")"
-    if [[ "$err" == *"unknown machine"* ]]; then
-      echo "" >&2
-      echo "🆕 This machine isn't registered with the mediator yet." >&2
-      echo "   Run: /c2c-client:peer-name <pick-a-short-name>" >&2
-      echo "   That will register and you can pair right after." >&2
-      echo "" >&2
+    # The server now returns a generic 'unauthenticated' body and puts the
+    # reason in X-C2C-Auth-Reason so the body reveals nothing to outsiders.
+    # We surface a helpful hint to the local user only.
+    local reason; reason="$(grep -i '^X-C2C-Auth-Reason:' "$hdrs" 2>/dev/null | awk '{print tolower($2)}' | tr -d '\r\n ')"
+    if [[ "$reason" == "unregistered" ]]; then
+      cat <<'EOF' >&2
+
+🆕 This machine's identity is no longer known to the mediator.
+   The server may have been reset. Re-register with:
+     /c2c-client:peer-name <your-name>
+EOF
       return 1
     fi
   fi
@@ -211,6 +256,9 @@ c2c::call() {
 }
 
 # Register self with the mediator (used during /c2c-client:peer-name on first run).
+# The server DERIVES the machine id from the pubkey — we no longer choose our own
+# id. Canonicalization signs the exact bytes we POST, with `signature` blanked
+# out, so the server verifies against the same rawBody it receives.
 c2c::register() {
   local name="$1"
   if [[ -z "$C2C_MEDIATOR_TOKEN" ]]; then
@@ -221,14 +269,20 @@ ERROR: mediator_token is not set. Configure it via EITHER path:
 EOF
     return 1
   fi
-  local pubkey ts nonce sigbody sig payload
+  c2c::ensure_keys
+  local pubkey ts nonce sig full_unsigned full_for_sig full
   pubkey="$(cat "$C2C_PUBKEY_FILE")"
   ts="$(c2c::now_ms)"
   nonce="$(head -c 16 /dev/urandom | xxd -p -c 32)"
-  payload="$(jq -nc --arg id "$C2C_MACHINE_ID" --arg name "$name" --arg pk "$pubkey" --argjson ts "$ts" --arg n "$nonce" \
-    '{id:$id, name:$name, public_key_pem:$pk, ts:$ts, nonce:$n}')"
-  sig="$(c2c::canonical POST /v1/register "$ts" "$nonce" "$payload" | c2c::sign_b64)"
-  local full; full="$(jq -nc --argjson p "$payload" --arg s "$sig" '$p + {signature:$s}')"
+  # Build the final body (keys in a fixed order) with an empty signature
+  # field, sign its bytes, then substitute the real signature. The server
+  # verifies over `{...everything..., "signature":""}` and thus checks the
+  # actual bytes on the wire (H-1).
+  full_for_sig="$(jq -nc --arg name "$name" --arg pk "$pubkey" --argjson ts "$ts" --arg n "$nonce" \
+    '{name:$name, public_key_pem:$pk, ts:$ts, nonce:$n, signature:""}')"
+  sig="$(c2c::canonical POST /v1/register "$ts" "$nonce" "$full_for_sig" | c2c::sign_b64)"
+  full="$(jq -nc --arg name "$name" --arg pk "$pubkey" --argjson ts "$ts" --arg n "$nonce" --arg s "$sig" \
+    '{name:$name, public_key_pem:$pk, ts:$ts, nonce:$n, signature:$s}')"
 
   local tmp; tmp="$(mktemp)"; trap 'rm -f "$tmp"' RETURN
   local code
@@ -240,6 +294,15 @@ EOF
   if [[ "$code" -ge 400 ]]; then
     echo "ERROR: registration HTTP $code" >&2; cat "$tmp" >&2; echo >&2; return 1
   fi
+
+  # Persist the server-assigned id so subsequent authenticated calls can sign
+  # with the correct X-Machine-ID.
+  local assigned_id
+  assigned_id="$(jq -r '.machine.id // empty' "$tmp")"
+  if [[ -z "$assigned_id" ]]; then
+    echo "ERROR: register response missing machine.id" >&2; cat "$tmp" >&2; return 1
+  fi
+  c2c::_persist_identity "$assigned_id"
   cat "$tmp"
 }
 

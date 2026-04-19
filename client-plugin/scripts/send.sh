@@ -8,12 +8,19 @@ source "$SCRIPT_DIR/common.sh"
 c2c::require_config
 c2c::require_name
 
-if [[ $# -lt 2 ]]; then
+# The slash-command harness substitutes $ARGUMENTS textually into the bash
+# invocation; we receive it as a single quoted arg to avoid metacharacter
+# injection. Re-parse into peer + body without eval (word-split only).
+if [[ $# -eq 1 ]]; then
+  IFS=$' \t' read -r PEER MSG <<<"$1"
+  [[ -z "${PEER:-}" || -z "${MSG:-}" ]] && { echo "Usage: peer-send <peer-name> <message>" >&2; exit 1; }
+elif [[ $# -ge 2 ]]; then
+  PEER="$1"; shift
+  MSG="$*"
+else
   echo "Usage: peer-send <peer-name> <message>" >&2
   exit 1
 fi
-PEER="$1"; shift
-MSG="$*"
 
 ID="$(c2c::resolve_name "$PEER")"
 if [[ -z "$ID" ]]; then

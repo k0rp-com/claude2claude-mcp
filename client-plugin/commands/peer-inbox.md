@@ -4,4 +4,4 @@ argument-hint: [wait_seconds]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/inbox.sh:*)
 ---
 
-!`${CLAUDE_PLUGIN_ROOT}/scripts/inbox.sh $ARGUMENTS`
+!`${CLAUDE_PLUGIN_ROOT}/scripts/inbox.sh "$ARGUMENTS"`
