@@ -12,16 +12,13 @@ set -euo pipefail
 __c2c_opt_url="${CLAUDE_PLUGIN_OPTION_url:-}"
 __c2c_opt_mediator_token="${CLAUDE_PLUGIN_OPTION_mediator_token:-}"
 __c2c_opt_stop_hook_wait_seconds="${CLAUDE_PLUGIN_OPTION_stop_hook_wait_seconds:-}"
-__c2c_opt_auto_inject_on_stop="${CLAUDE_PLUGIN_OPTION_auto_inject_on_stop:-}"
 __c2c_env_url="${C2C_URL:-}"
 __c2c_env_mediator_token="${C2C_MEDIATOR_TOKEN:-}"
 __c2c_env_stop_hook_wait_seconds="${C2C_WAIT:-}"
-__c2c_env_auto_inject_on_stop="${C2C_AUTO_INJECT:-}"
 
 C2C_URL="${__c2c_opt_url:-$__c2c_env_url}"
 C2C_MEDIATOR_TOKEN="${__c2c_opt_mediator_token:-$__c2c_env_mediator_token}"
 C2C_WAIT="${__c2c_opt_stop_hook_wait_seconds:-$__c2c_env_stop_hook_wait_seconds}"
-C2C_AUTO_INJECT="${__c2c_opt_auto_inject_on_stop:-$__c2c_env_auto_inject_on_stop}"
 
 C2C_DIR="${C2C_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/c2c-client}"
 C2C_IDENTITY_FILE="$C2C_DIR/identity.json"
@@ -42,21 +39,18 @@ c2c::_fill_from_config_file() {
     echo "WARN: $C2C_CONFIG_FILE is not valid JSON — ignoring." >&2
     return 0
   }
-  local url tok wait auto
+  local url tok wait
   url="$(jq -r '.url // ""' "$C2C_CONFIG_FILE")"
   tok="$(jq -r '.mediator_token // ""' "$C2C_CONFIG_FILE")"
   wait="$(jq -r '.stop_hook_wait_seconds // "" | tostring' "$C2C_CONFIG_FILE")"
-  auto="$(jq -r '.auto_inject_on_stop // "" | tostring' "$C2C_CONFIG_FILE")"
   if [[ -z "$C2C_URL"            && -n "$url"  ]]; then C2C_URL="$url"; fi
   if [[ -z "$C2C_MEDIATOR_TOKEN" && -n "$tok"  ]]; then C2C_MEDIATOR_TOKEN="$tok"; fi
   if [[ -z "$C2C_WAIT"           && -n "$wait" ]]; then C2C_WAIT="$wait"; fi
-  if [[ -z "$C2C_AUTO_INJECT"    && -n "$auto" ]]; then C2C_AUTO_INJECT="$auto"; fi
 }
 c2c::_fill_from_config_file
 
 # Defaults for optional fields (applied last so any upstream source wins).
 : "${C2C_WAIT:=10}"
-: "${C2C_AUTO_INJECT:=false}"
 
 c2c::ensure_tools() {
   for tool in curl jq openssl; do

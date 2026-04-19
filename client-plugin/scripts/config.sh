@@ -19,7 +19,6 @@ Keys:
   url                     http(s):// base of mediator
   mediator_token          registration token (whitespace-free)
   stop_hook_wait_seconds  integer, default 10
-  auto_inject_on_stop     true | false, default false
 
 Resolution order (higher wins):
   userConfig form (/plugin enable)  >  C2C_* env  >  config file  >  default
@@ -48,7 +47,6 @@ cmd_show() {
   echo "url:                    ${C2C_URL:-<not set>}   [$(source_of url)]"
   echo "mediator_token:         ${tok_display}   [$(source_of mediator_token)]"
   echo "stop_hook_wait_seconds: ${C2C_WAIT}   [$(source_of stop_hook_wait_seconds)]"
-  echo "auto_inject_on_stop:    ${C2C_AUTO_INJECT}   [$(source_of auto_inject_on_stop)]"
   echo "config file:            $C2C_CONFIG_FILE $( [[ -f "$C2C_CONFIG_FILE" ]] && echo '(exists)' || echo '(absent)' )"
 }
 
@@ -120,7 +118,7 @@ cmd_set_url_token() {
   url="${url%/}"
 
   local existing; existing="$(_existing_config)"
-  local keep; keep="$(echo "$existing" | jq '{stop_hook_wait_seconds, auto_inject_on_stop} | with_entries(select(.value != null and .value != ""))')"
+  local keep; keep="$(echo "$existing" | jq '{stop_hook_wait_seconds} | with_entries(select(.value != null and .value != ""))')"
   local json; json="$(jq -n --arg url "$url" --arg tok "$tok" --argjson keep "$keep" \
     '{url:$url, mediator_token:$tok} + $keep')"
   _write_config "$json"
@@ -155,14 +153,8 @@ cmd_set_single() {
         echo "ERROR: stop_hook_wait_seconds must be a positive integer" >&2; exit 1
       fi
       ;;
-    auto_inject_on_stop)
-      case "$val" in
-        true|false) ;;
-        *) echo "ERROR: auto_inject_on_stop must be 'true' or 'false'" >&2; exit 1 ;;
-      esac
-      ;;
     *)
-      echo "ERROR: unknown key '$key'. Valid keys: url, mediator_token, stop_hook_wait_seconds, auto_inject_on_stop" >&2
+      echo "ERROR: unknown key '$key'. Valid keys: url, mediator_token, stop_hook_wait_seconds" >&2
       exit 1
       ;;
   esac
@@ -179,7 +171,7 @@ cmd_set_single() {
 
 known_key() {
   case "$1" in
-    url|mediator_token|stop_hook_wait_seconds|auto_inject_on_stop) return 0 ;;
+    url|mediator_token|stop_hook_wait_seconds) return 0 ;;
     *) return 1 ;;
   esac
 }

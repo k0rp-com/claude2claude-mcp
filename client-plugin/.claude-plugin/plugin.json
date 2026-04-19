@@ -1,6 +1,6 @@
 {
   "name": "c2c-client",
-  "version": "0.2.10",
+  "version": "0.3.0",
   "description": "Pair two Claude Code sessions across machines via the c2c mediator. End-to-end ed25519-signed requests; pair-by-code (4-digit) flow; per-machine identity; nothing in the channel can be forged without your machine's private key.",
   "author": {
     "name": "claude2claude-mcp"
@@ -32,13 +32,6 @@
       "description": "How long the Stop hook long-polls for incoming messages / pair-requests. Default 10.",
       "sensitive": false,
       "default": "10"
-    },
-    "auto_inject_on_stop": {
-      "type": "string",
-      "title": "Auto-inject on Stop",
-      "description": "Default 'false' (recommended): Stop hook only NOTIFIES — message bodies are NOT loaded into the session until you run /c2c-client:peer-inbox. Set 'true' to auto-load.",
-      "sensitive": false,
-      "default": "false"
     }
   }
 }
