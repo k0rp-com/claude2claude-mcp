@@ -39,6 +39,11 @@ listener_pid_file="$C2C_DIR/listener.pid"
 if [[ -f "$listener_pid_file" ]]; then
   pid="$(cat "$listener_pid_file" 2>/dev/null || echo '')"
   if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+    cat <<'EOF'
+c2c-client: peer-mail listener уже запущен в другой сессии Claude на этой машине (PID-файл жив). Не запускай Monitor — два листенера гонялись бы за одним inbox и доставляли сообщения дважды.
+
+Скажи пользователю одной короткой строкой: "👂 peer-listener уже активен в другой сессии — новый не поднимаю".
+EOF
     exit 0
   fi
   rm -f "$listener_pid_file" 2>/dev/null || true
