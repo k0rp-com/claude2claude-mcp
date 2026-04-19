@@ -14,8 +14,9 @@ const log = makeLogger(config.logLevel);
 const db = openDb(config.dbPath);
 const app = buildApp(db);
 const cleanup = startCleanup(db, {
+  unackedTtlMs: config.unackedMessageTtlMs,
   onSweep: (res) => {
-    if (res.acked > 0 || res.stale > 0) {
+    if (res.acked > 0 || res.stale > 0 || res.unacked > 0) {
       log.info('cleanup.swept', res);
     }
   },

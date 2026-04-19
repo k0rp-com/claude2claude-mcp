@@ -93,13 +93,26 @@ msg_block="$(echo "$resp" | jq -r '.messages[] |
 <<<END_UNTRUSTED_PEER_MESSAGE>>>
 "')"
 
-# Ack messages so they don't redeliver.
+reason="$mcount peer message(s), $pcount pair request(s) — handle before stopping"
+additional="${intro}${pair_block}${msg_block}"
+
+# Build decision JSON first. If jq can't build it (should be impossible with
+# --arg, but set -e would still abort us here), we exit before ack → server
+# retains the message and it redelivers on the next Stop. No silent drop.
+decision="$(jq -nc --arg r "$reason" --arg c "$additional" \
+  '{decision:"block", reason:$r, additionalContext:$c}')"
+[[ -z "$decision" ]] && exit 1
+
+# Emit decision to Claude Code BEFORE ack'ing. If the process dies between
+# printf and the ack call, the message stays unacked and the next Stop hook
+# re-delivers it. The server's unacked-TTL sweep is the final backstop.
+printf '%s\n' "$decision"
+
+# Now ack. Output goes to /dev/null so it never pollutes the decision JSON
+# on stdout. If ack fails (network), message remains unacked → server
+# redelivers once on next Stop or GCs it via UNACKED_TTL_SECONDS.
 if [[ "$mcount" -gt 0 ]]; then
   ids="$(echo "$resp" | jq -c '[.messages[].id]')"
   ack_payload="$(jq -nc --argjson ids "$ids" '{ids:$ids}')"
   c2c::call POST /v1/ack "$ack_payload" >/dev/null 2>&1 || true
 fi
-
-reason="$mcount peer message(s), $pcount pair request(s) — handle before stopping"
-additional="${intro}${pair_block}${msg_block}"
-jq -nc --arg r "$reason" --arg c "$additional" '{decision:"block", reason:$r, additionalContext:$c}'

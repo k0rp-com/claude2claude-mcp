@@ -76,7 +76,7 @@ export interface Db {
   ack(id: string, owner: string): boolean;
   getMessage(id: string): Message | null;
   thread(threadId: string, requesterId: string): Message[];
-  cleanupOlderThan(ackedOlderThanMs: number, allOlderThanMs: number): { acked: number; stale: number };
+  cleanupOlderThan(ackedOlderThanMs: number, allOlderThanMs: number, unackedOlderThanMs: number): { acked: number; stale: number; unacked: number };
 
   events: EventEmitter;
   close(): void;
@@ -201,6 +201,7 @@ export function openDb(path: string): Db {
   const msgThread = sqlite.prepare<[string]>(`SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC`);
   const msgCleanupAcked = sqlite.prepare<[number]>(`DELETE FROM messages WHERE ack_at IS NOT NULL AND ack_at <= ?`);
   const msgCleanupStale = sqlite.prepare<[number]>(`DELETE FROM messages WHERE created_at <= ?`);
+  const msgCleanupUnacked = sqlite.prepare<[number]>(`DELETE FROM messages WHERE ack_at IS NULL AND created_at <= ?`);
 
   return {
     events,
@@ -347,11 +348,12 @@ export function openDb(path: string): Db {
       const rows = msgThread.all(threadId) as Message[];
       return rows.filter((m) => m.from_id === requesterId || m.to_id === requesterId);
     },
-    cleanupOlderThan(ackedOlderThanMs, allOlderThanMs) {
+    cleanupOlderThan(ackedOlderThanMs, allOlderThanMs, unackedOlderThanMs) {
       const now = Date.now();
       const a = msgCleanupAcked.run(now - ackedOlderThanMs).changes;
       const s = msgCleanupStale.run(now - allOlderThanMs).changes;
-      return { acked: a, stale: s };
+      const u = msgCleanupUnacked.run(now - unackedOlderThanMs).changes;
+      return { acked: a, stale: s, unacked: u };
     },
 
     close() {

@@ -13,6 +13,7 @@ const envSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   PAIR_REQUEST_TTL_SECONDS: z.coerce.number().int().positive().default(120),
   CLOCK_SKEW_SECONDS: z.coerce.number().int().nonnegative().default(300),
+  UNACKED_MESSAGE_TTL_SECONDS: z.coerce.number().int().positive().default(120),
 });
 
 const parsed = envSchema.safeParse(process.env);
@@ -34,4 +35,5 @@ export const config = {
   logLevel: env.LOG_LEVEL,
   pairRequestTtlMs: env.PAIR_REQUEST_TTL_SECONDS * 1000,
   clockSkewMs: env.CLOCK_SKEW_SECONDS * 1000,
+  unackedMessageTtlMs: env.UNACKED_MESSAGE_TTL_SECONDS * 1000,
 };

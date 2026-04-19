@@ -27,7 +27,7 @@ function parseEnvFile(text: string): Record<string, string> {
 }
 
 function serializeEnv(obj: Record<string, string>): string {
-  const order = ['MEDIATOR_TOKEN', 'PUBLIC_URL', 'DB_PATH', 'PORT', 'HOST', 'MAX_LONG_POLL_SECONDS', 'LOG_LEVEL', 'PAIR_REQUEST_TTL_SECONDS', 'CLOCK_SKEW_SECONDS'];
+  const order = ['MEDIATOR_TOKEN', 'PUBLIC_URL', 'DB_PATH', 'PORT', 'HOST', 'MAX_LONG_POLL_SECONDS', 'LOG_LEVEL', 'PAIR_REQUEST_TTL_SECONDS', 'CLOCK_SKEW_SECONDS', 'UNACKED_MESSAGE_TTL_SECONDS'];
   const seen = new Set<string>();
   const lines = ['# Auto-generated. MEDIATOR_TOKEN is a SECRET — do not commit.'];
   for (const k of order) {
@@ -109,6 +109,7 @@ export function ensureEnv(cwd = process.cwd(), opts: { marketplaceUrl?: string }
   if (!existing['LOG_LEVEL']) { existing['LOG_LEVEL'] = 'info'; changed = true; }
   if (!existing['PAIR_REQUEST_TTL_SECONDS']) { existing['PAIR_REQUEST_TTL_SECONDS'] = '120'; changed = true; }
   if (!existing['CLOCK_SKEW_SECONDS']) { existing['CLOCK_SKEW_SECONDS'] = '300'; changed = true; }
+  if (!existing['UNACKED_MESSAGE_TTL_SECONDS']) { existing['UNACKED_MESSAGE_TTL_SECONDS'] = '120'; changed = true; }
 
   if (changed) {
     writeFileSync(envPath, serializeEnv(existing), { mode: 0o600 });
