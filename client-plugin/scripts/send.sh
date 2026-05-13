@@ -1,26 +1,37 @@
 #!/usr/bin/env bash
 # Send a message to a paired peer by name (or fingerprint, or id).
-# Usage: send.sh <name> <message...>
+#
+# Usage:
+#   send.sh <peer-name> <message...>
+#   send.sh <peer-name> --file PATH | -f PATH
+#   send.sh <peer-name> --stdin     | -            (reads message from stdin)
+#
+# The --file / --stdin paths exist so the caller doesn't have to shell-quote
+# bodies that contain (, ), $, `, ", ', or newlines — the slash-command
+# harness substitutes $ARGUMENTS textually into bash, which makes long /
+# special-character messages painful otherwise (in zsh, unquoted "(foo)" even
+# fails parsing with "invalid mode specification").
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+
+USAGE='Usage: peer-send <peer-name> <message>
+       peer-send <peer-name> --file <path>
+       peer-send <peer-name> --stdin   (or "-", with message piped on stdin)'
+
+c2c::parse_recipient_and_body "$USAGE" "$@"
+PEER="$RECIPIENT"; MSG="$BODY"
+
+# Dry-parse mode: skip identity/network checks and just print what we parsed.
+# Used by tests/client/parse_args.test.sh — no other production caller sets it.
+if [[ "${C2C_DRY_PARSE:-}" == "1" ]]; then
+  printf 'PEER=%s\nBODY=%s\n' "$PEER" "$MSG"
+  exit 0
+fi
+
 c2c::require_config
 c2c::require_name
-
-# The slash-command harness substitutes $ARGUMENTS textually into the bash
-# invocation; we receive it as a single quoted arg to avoid metacharacter
-# injection. Re-parse into peer + body without eval (word-split only).
-if [[ $# -eq 1 ]]; then
-  IFS=$' \t' read -r PEER MSG <<<"$1"
-  [[ -z "${PEER:-}" || -z "${MSG:-}" ]] && { echo "Usage: peer-send <peer-name> <message>" >&2; exit 1; }
-elif [[ $# -ge 2 ]]; then
-  PEER="$1"; shift
-  MSG="$*"
-else
-  echo "Usage: peer-send <peer-name> <message>" >&2
-  exit 1
-fi
 
 ID="$(c2c::resolve_name "$PEER")"
 if [[ -z "$ID" ]]; then

@@ -107,8 +107,8 @@ pnpm typecheck
 | `/c2c-client:peer-confirm <code>` | подтвердить входящий pair-запрос |
 | `/c2c-client:peer-list` | список спаренных пиров (синк с сервера) |
 | `/c2c-client:peer-unpair <name>` | удалить пира |
-| `/c2c-client:peer-send <name> <текст>` | отправить сообщение по имени |
-| `/c2c-client:peer-reply <msg_id> <текст>` | ответить на конкретное сообщение |
+| `/c2c-client:peer-send <name> <текст>` <br> `/c2c-client:peer-send <name> --file <path>` | отправить сообщение по имени; `--file` — для длинных/спецсимвольных тел (см. ниже) |
+| `/c2c-client:peer-reply <msg_id> <текст>` <br> `/c2c-client:peer-reply <msg_id> --file <path>` | ответить на конкретное сообщение |
 | `/c2c-client:peer-inbox [wait_s]` | подгрузить тела входящих в security-обёртке |
 | `/c2c-client:peer-listen` | запустить real-time listener (persistent `Monitor`) — push без ожидания Stop-хука |
 | `/c2c-client:peer-status` | health, identity, превью inbox |
@@ -122,6 +122,28 @@ pnpm typecheck
 **3. Stop-хук в auto-режиме (`auto_inject_on_stop=true`).** То же что notify, но тела инжектятся автоматически в строгом security frame. Без ручного `/c2c-client:peer-inbox`. Удобно, но prompt-injection попадает напрямую в контекст.
 
 Во всех трёх случаях `/c2c-client:peer-inbox` оборачивает каждое сообщение `<<<UNTRUSTED_PEER_MESSAGE>>>` + 6 явных правил Клоду: не выполнять команды из тела, не читать секреты, всегда спрашивать пользователя перед действиями.
+
+### Длинные / special-character сообщения
+
+Inline-форма `/c2c-client:peer-send <name> <текст>` подставляется в bash через `"$ARGUMENTS"` — это нормально для коротких строк без кавычек и скобок, но ломается на `(`, `)`, `'`, `"`, бэктиках, переводах строк (а в zsh даже `(foo)` без кавычек ругается `invalid mode specification`). Для таких сообщений:
+
+**вариант A — через файл** (рекомендуется для slash-команды):
+```text
+# Claude пишет тело в файл через Write tool, потом:
+/c2c-client:peer-send bob --file /tmp/msg.txt
+/c2c-client:peer-reply 01HF... --file /tmp/reply.md
+```
+
+**вариант B — через stdin** (когда Claude вызывает скрипт напрямую из своего Bash):
+```bash
+bash "$CLAUDE_PLUGIN_ROOT/scripts/send.sh" bob - <<'EOF'
+любой текст — (скобки), 'кавычки', "и даже" $переменные,
+переводы строк — всё уходит как есть.
+EOF
+```
+`--stdin` — синоним `-`. Stdin от tty без пайпа отвергается, чтобы не зависнуть.
+
+Body отдаётся серверу ровно как считан, **за исключением хвостовых `\n`** — они срезаются (стандарт `$(...)`-семантики, как у `git commit -F` / `gh pr create --body-file`).
 
 ---
 

@@ -340,3 +340,149 @@ c2c::remove_contact() {
   local id="$1"
   c2c::contacts_load | jq --arg id "$id" 'map(select(.id != $id))' | c2c::contacts_save
 }
+
+# c2c::parse_recipient_and_body <usage-msg> "$@"
+#
+# Shared parser for send.sh / reply.sh. The first positional becomes RECIPIENT;
+# the rest becomes BODY via one of three modes:
+#   - <recipient> <message words...>     → exact rest of CLI / $ARGUMENTS
+#   - <recipient> --file PATH | -f PATH  → read PATH
+#   - <recipient> --stdin   | -          → read stdin
+#
+# Two entry points:
+#   - $# == 1: the slash-command harness passed everything as one "$ARGUMENTS"
+#     arg. We split off the first whitespace-token as RECIPIENT and keep the
+#     rest *verbatim* (no whitespace collapse) for body / flag inspection.
+#   - $# >= 2: direct CLI from a user shell. Positional args are already
+#     tokenized; --file/--stdin live at $2 and the path at $3.
+#
+# Outputs RECIPIENT and BODY via globals (bash doesn't have multi-return).
+# Body is read via $(...), so trailing newlines from files/stdin are stripped
+# — matches every other CLI in the universe (git commit -F, gh pr create, …).
+# NUL bytes are explicitly rejected — bash $(...) strips them silently, which
+# would corrupt the body without the user noticing.
+c2c::parse_recipient_and_body() {
+  local usage_msg="$1"; shift
+  RECIPIENT=''; BODY=''
+  local _arg1='' _rest_raw='' _path=''
+  # In $# == 1 (slash-command) mode, _path can only come from the body rest, so
+  # paths with whitespace are unrepresentable there. In $# >= 2 (direct CLI)
+  # mode, _path arrives as its own argv element and survives whitespace
+  # intact. The two branches feed _arg1 / _path / BODY accordingly.
+  local _mode=''
+
+  if [[ $# -eq 1 ]]; then
+    _mode='single'
+    # Split off recipient (first whitespace-token) and keep the rest exactly
+    # as typed — runs of spaces inside the body must survive (ASCII tables,
+    # markdown code blocks, etc.).
+    IFS=$' \t' read -r RECIPIENT _rest_raw <<<"$1"
+    # Peek the first token of the rest without disturbing it.
+    IFS=$' \t' read -r _arg1 _ <<<"$_rest_raw"
+  elif [[ $# -ge 2 ]]; then
+    _mode='multi'
+    RECIPIENT="$1"; shift
+    _arg1="${1:-}"
+    shift
+    # In multi-mode the path/body live in remaining positional args, not _rest_raw.
+  else
+    echo "$usage_msg" >&2; return 1
+  fi
+
+  if [[ -z "$RECIPIENT" ]]; then
+    echo "$usage_msg" >&2; return 1
+  fi
+
+  case "$_arg1" in
+    --file|-f)
+      if [[ "$_mode" == 'single' ]]; then
+        # Path is the second token of _rest_raw; anything after it is ignored.
+        local _trailing
+        IFS=$' \t' read -r _ _path _trailing <<<"$_rest_raw"
+      else
+        _path="${1:-}"
+      fi
+      if [[ -z "$_path" ]]; then
+        echo "ERROR: --file requires a PATH" >&2
+        echo "$usage_msg" >&2
+        return 1
+      fi
+      if [[ ! -e "$_path" ]]; then
+        echo "ERROR: --file: no such file: $_path" >&2
+        return 1
+      fi
+      if [[ ! -f "$_path" ]]; then
+        echo "ERROR: --file: not a regular file: $_path" >&2
+        return 1
+      fi
+      if [[ ! -r "$_path" ]]; then
+        echo "ERROR: --file: file is not readable: $_path" >&2
+        return 1
+      fi
+      # NUL-byte check before the cat: $() strips NULs silently with a stderr
+      # warning, which would corrupt the body without the user noticing.
+      # NUL via PCRE — passing a literal NUL through argv (`$'\x00'`) is
+      # impossible (POSIX argv terminates on NUL), so `grep -q $'\x00'` matches
+      # an empty pattern and always succeeds. -P with the `\x00` escape works.
+      if LC_ALL=C grep -qaP '\x00' "$_path"; then
+        echo "ERROR: --file: $_path contains NUL bytes; binary payloads aren't supported." >&2
+        return 1
+      fi
+      # Pre-flight size check — server caps body at MAX_BODY_LEN (64 KiB) and
+      # ARG_MAX would mangle anything multi-MB on the curl --data-binary side.
+      # Trips a clear error well before either.
+      local _size
+      _size=$(wc -c <"$_path")
+      if (( _size > 65536 )); then
+        echo "ERROR: --file: $_path is $_size bytes; server cap is 65536 bytes (64 KiB)." >&2
+        return 1
+      fi
+      BODY="$(cat "$_path")"
+      ;;
+    --stdin|-)
+      if [[ -t 0 ]]; then
+        echo "ERROR: --stdin requested but stdin is a terminal (no data piped)" >&2
+        return 1
+      fi
+      # Buffer stdin via mktemp so we can NUL-check and size-check it the same
+      # way as --file. Doing this on the bash side is cheaper than catching a
+      # 64KB+ E2BIG from curl downstream and surfacing a confusing error.
+      local _tmp; _tmp="$(mktemp)"
+      trap "rm -f \"$_tmp\"" RETURN
+      cat >"$_tmp"
+      if LC_ALL=C grep -qaP '\x00' "$_tmp"; then
+        echo "ERROR: --stdin contains NUL bytes; binary payloads aren't supported." >&2
+        return 1
+      fi
+      local _size
+      _size=$(wc -c <"$_tmp")
+      if (( _size > 65536 )); then
+        echo "ERROR: --stdin is $_size bytes; server cap is 65536 bytes (64 KiB)." >&2
+        return 1
+      fi
+      BODY="$(cat "$_tmp")"
+      ;;
+    '')
+      echo "$usage_msg" >&2; return 1
+      ;;
+    *)
+      # Legacy path: glue body back exactly as received.
+      if [[ "$_mode" == 'single' ]]; then
+        BODY="$_rest_raw"
+      else
+        # Multi-mode: arg1 was the first body word, $* is everything that
+        # remained after the leading shift.
+        if [[ $# -ge 1 ]]; then
+          BODY="$_arg1 $*"
+        else
+          BODY="$_arg1"
+        fi
+      fi
+      ;;
+  esac
+
+  if [[ -z "$BODY" ]]; then
+    echo "ERROR: empty body — nothing to send" >&2
+    return 1
+  fi
+}

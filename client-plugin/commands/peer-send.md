@@ -1,6 +1,6 @@
 ---
-description: Send a message to a paired peer by name (e.g. /c2c-client:peer-send laptop "hi from desktop")
-argument-hint: <peer-name> <message>
+description: Send a message to a paired peer by name. For long or special-character bodies (parens, quotes, newlines) use `--file PATH`; the inline form gets mangled by shell quoting.
+argument-hint: <peer-name> <message> | <peer-name> --file <path>
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/send.sh:*)
 ---
 
