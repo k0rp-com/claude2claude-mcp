@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # /c2c-client:peer-config — configure mediator url + token without going through /plugin enable.
-# Writes $C2C_DIR/config.json (mode 600). Ignored if userConfig form / C2C_* env already set.
+# Writes the GLOBAL config.json (mode 600) — mediator url/token are shared by
+# every project on this machine. Ignored if userConfig form / C2C_* env already set.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
@@ -80,7 +81,8 @@ trim() {
 
 _write_config() {
   local json="$1"
-  mkdir -p "$C2C_DIR"; chmod 700 "$C2C_DIR" 2>/dev/null || true
+  local dir; dir="$(dirname "$C2C_CONFIG_FILE")"
+  mkdir -p "$dir"; chmod 700 "$dir" 2>/dev/null || true
   local tmp; tmp="$(mktemp)"
   printf '%s' "$json" > "$tmp"
   mv "$tmp" "$C2C_CONFIG_FILE"

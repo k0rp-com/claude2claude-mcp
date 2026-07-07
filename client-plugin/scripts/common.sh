@@ -5,7 +5,9 @@ set -euo pipefail
 # Config resolution order (highest → lowest priority):
 #   1. CLAUDE_PLUGIN_OPTION_<key>  — userConfig form (Claude Code harness, /plugin enable)
 #   2. C2C_<KEY> env               — explicit shell export
-#   3. $C2C_DIR/config.json        — written by /c2c-client:peer-config
+#   3. config.json                — written by /c2c-client:peer-config; lives in the
+#                                    global dir (shared by all projects), or under
+#                                    $C2C_DIR when C2C_DIR is explicitly overridden
 #   4. hard-coded default          — for optional fields only
 # Capture pristine env state so /c2c-client:peer-config show can attribute each value
 # to its source (userConfig form vs. explicit C2C_* env vs. file vs. default).
@@ -20,13 +22,11 @@ C2C_URL="${__c2c_opt_url:-$__c2c_env_url}"
 C2C_MEDIATOR_TOKEN="${__c2c_opt_mediator_token:-$__c2c_env_mediator_token}"
 C2C_WAIT="${__c2c_opt_stop_hook_wait_seconds:-$__c2c_env_stop_hook_wait_seconds}"
 
-C2C_DIR="${C2C_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/c2c-client}"
-C2C_IDENTITY_FILE="$C2C_DIR/identity.json"
-C2C_PRIVKEY_FILE="$C2C_DIR/private_key.pem"
-C2C_PUBKEY_FILE="$C2C_DIR/public_key.pem"
-C2C_CONTACTS_FILE="$C2C_DIR/contacts.json"
-C2C_NAME_FILE="$C2C_DIR/name.txt"
-C2C_CONFIG_FILE="$C2C_DIR/config.json"
+# Identity dir + file paths are resolved by c2c::_resolve_dirs (called at the
+# bottom of this file, after c2c::sha256_hex is defined — the per-project slug
+# hashes the project path). By default each project gets its OWN identity dir;
+# the mediator config.json (url/token) stays global and shared. An explicit
+# C2C_DIR env overrides everything.
 
 # Fill unset fields from $C2C_CONFIG_FILE. Never overrides values already set
 # via userConfig form / C2C_* env.
@@ -47,10 +47,58 @@ c2c::_fill_from_config_file() {
   if [[ -z "$C2C_MEDIATOR_TOKEN" && -n "$tok"  ]]; then C2C_MEDIATOR_TOKEN="$tok"; fi
   if [[ -z "$C2C_WAIT"           && -n "$wait" ]]; then C2C_WAIT="$wait"; fi
 }
-c2c::_fill_from_config_file
 
-# Defaults for optional fields (applied last so any upstream source wins).
-: "${C2C_WAIT:=10}"
+# Derive a stable, filesystem-safe directory name for a project path.
+# Same path (modulo trailing slash / symlinks) → same slug; different paths →
+# different slugs even when they share a basename. Human-readable prefix +
+# a hash of the canonical absolute path for uniqueness.
+c2c::project_slug() {
+  local root="${1:-}" abs base hash
+  [[ -n "$root" ]] || root="$PWD"
+  # Canonicalize so /p, /p/ and a symlinked /p all map to one key.
+  abs="$(cd "$root" 2>/dev/null && pwd -P)" || abs=""
+  [[ -n "$abs" ]] || abs="$root"
+  base="$(basename -- "$abs")"
+  # tr -c replaces EVERY byte outside the allow-set (incl. '/', NUL, newline)
+  # with '_', so the slug is always a single safe path segment — no traversal.
+  base="$(printf '%s' "$base" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
+  base="${base:0:24}"
+  # 64-bit hash slice: collision-resistant enough that a deliberate slug
+  # collision (identity reuse) is 2^64 work, while keeping dir names short.
+  hash="$(printf '%s' "$abs" | c2c::sha256_hex)"
+  printf '%s-%s' "$base" "${hash:0:16}"
+}
+
+# Resolve C2C_DIR + all identity file paths. Two modes:
+#   • explicit C2C_DIR env set → use it verbatim for identity AND config
+#     (back-compat / power users / test isolation).
+#   • otherwise → per-project identity dir under <global>/projects/<slug>,
+#     while config.json stays in the shared <global> dir (mediator url/token
+#     are machine-global, not per-project).
+c2c::_resolve_dirs() {
+  local global_dir="${XDG_CONFIG_HOME:-$HOME/.config}/c2c-client"
+  C2C_GLOBAL_DIR="$global_dir"
+  if [[ -n "${C2C_DIR:-}" ]]; then
+    C2C_PROJECT_ROOT=''
+    C2C_CONFIG_FILE="$C2C_DIR/config.json"
+  else
+    C2C_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+    # Harden the shared tree on every code path (not only on an explicit
+    # peer-config write): the global dir holds config.json + all per-project
+    # identities, so keep it and projects/ owner-only (700). Otherwise
+    # `mkdir -p` leaves them at umask (typically 755), leaking project slugs
+    # to other local users on a shared host.
+    mkdir -p "$global_dir/projects" 2>/dev/null || true
+    chmod 700 "$global_dir" "$global_dir/projects" 2>/dev/null || true
+    C2C_DIR="$global_dir/projects/$(c2c::project_slug "$C2C_PROJECT_ROOT")"
+    C2C_CONFIG_FILE="$global_dir/config.json"
+  fi
+  C2C_IDENTITY_FILE="$C2C_DIR/identity.json"
+  C2C_PRIVKEY_FILE="$C2C_DIR/private_key.pem"
+  C2C_PUBKEY_FILE="$C2C_DIR/public_key.pem"
+  C2C_CONTACTS_FILE="$C2C_DIR/contacts.json"
+  C2C_NAME_FILE="$C2C_DIR/name.txt"
+}
 
 c2c::ensure_tools() {
   for tool in curl jq openssl; do
@@ -486,3 +534,9 @@ c2c::parse_recipient_and_body() {
     return 1
   fi
 }
+
+# --- Bootstrap (must run last: c2c::project_slug needs c2c::sha256_hex) ---
+c2c::_resolve_dirs
+c2c::_fill_from_config_file
+# Default for optional field, applied last so any upstream source wins.
+: "${C2C_WAIT:=10}"

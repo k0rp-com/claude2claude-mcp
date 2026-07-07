@@ -9,6 +9,11 @@ c2c::ensure_tools
 echo "url:           ${C2C_URL:-<not set>}"
 echo "mediator_token: $( [[ -n "${C2C_MEDIATOR_TOKEN:-}" ]] && echo '[REDACTED, set]' || echo '<not set>' )"
 echo "identity dir:  $C2C_DIR"
+if [[ -n "${C2C_PROJECT_ROOT:-}" ]]; then
+  echo "bound to:      $C2C_PROJECT_ROOT   (per-project identity — auto)"
+else
+  echo "bound to:      <explicit C2C_DIR override>"
+fi
 
 if [[ -z "${C2C_URL:-}" ]]; then
   echo
