@@ -16,6 +16,12 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$SCRIPT_DIR/common.sh"
+# common.sh runs `set -euo pipefail`; sourcing it re-armed errexit in THIS shell
+# and silently defeated the intentional "NO -e" above. Turn it back off so a
+# transient curl/jq/HTTP failure in the loop below reaches our inline
+# `rc != 0 → sleep 3; continue` handler instead of killing the whole listener
+# (which surfaces to the user as "peer-listener fell off"). Keep -u and pipefail.
+set +e
 
 c2c::ensure_tools
 # Silently no-op if not yet registered — SessionStart auto-arms this hook,
