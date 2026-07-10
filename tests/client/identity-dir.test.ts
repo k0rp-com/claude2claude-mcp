@@ -133,6 +133,34 @@ describe('c2c-client per-project identity dir', () => {
     expect(viaEmpty).toBe(viaProjectDir);
   });
 
+  it('regression: cwd inside a project subfolder keeps the SAME identity dir (git-root anchor)', () => {
+    // The real bug: with CLAUDE_PROJECT_DIR unset (this harness never sets it),
+    // Claude cd's into subfolders mid-session. Keying on raw $PWD moved the
+    // identity dir on every cd, "losing" keys/contacts/listener. The dir must
+    // anchor to the git toplevel, which is invariant across every subfolder.
+    const home = mkTmp('home-');
+    const pa = mkTmp('projA-');
+    execFileSync('git', ['-C', pa, 'init', '-q']);
+    const sub = path.join(pa, 'src', 'deep', 'nested');
+    execFileSync('mkdir', ['-p', sub]);
+    const fromRoot = dir({ home, cwd: pa }); // CLAUDE_PROJECT_DIR unset
+    const fromSub = dir({ home, cwd: sub }); // CLAUDE_PROJECT_DIR unset
+    expect(fromSub).toBe(fromRoot);
+  });
+
+  it('priority: CLAUDE_PROJECT_DIR wins over the git toplevel of cwd', () => {
+    // Resolution order is CLAUDE_PROJECT_DIR → git toplevel → $PWD. When the
+    // harness declares the root explicitly, a differing git toplevel of cwd
+    // must NOT override it.
+    const home = mkTmp('home-');
+    const declared = mkTmp('declared-');
+    const repo = mkTmp('repo-');
+    execFileSync('git', ['-C', repo, 'init', '-q']);
+    const viaDeclared = dir({ home, projectDir: declared });
+    const viaBoth = dir({ home, projectDir: declared, cwd: repo });
+    expect(viaBoth).toBe(viaDeclared);
+  });
+
   it('permission: shared global dir tree is chmod 700 (no metadata leak on shared hosts)', () => {
     const home = mkTmp('home-');
     const pa = mkTmp('projA-');

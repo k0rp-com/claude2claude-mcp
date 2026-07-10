@@ -12,3 +12,6 @@ INSTALL_INSTRUCTIONS.txt
 data/
 dist/
 .DS_Store
+
+# Personal Claude Code overrides (not team-wide)
+.claude/settings.local.json

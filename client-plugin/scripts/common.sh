@@ -69,6 +69,39 @@ c2c::project_slug() {
   printf '%s-%s' "$base" "${hash:0:16}"
 }
 
+# Resolve the project root that keys this project's identity dir. It MUST be
+# stable no matter where Claude's cwd currently is: Claude routinely `cd`s into
+# subfolders mid-session, and if the identity dir tracked raw $PWD the peer would
+# "lose" its keys/contacts/listener on every cd. Resolution order:
+#   1. CLAUDE_PROJECT_DIR — authoritative project root from the harness, when it
+#      sets it (some harnesses / hook contexts / the SDK CLI child sessions do NOT).
+#   2. git toplevel of $PWD — invariant across every subfolder of the same repo.
+#   3. $PWD — last resort for non-git, harness-less contexts.
+# git may be absent (not in ensure_tools' required set) or $PWD may be outside a
+# repo; both fail closed to $PWD, preserving the pre-git-anchor behavior.
+#
+# Known limitation: if $PWD sits inside a *nested* repo (git submodule, vendored
+# clone, or a scratch `git init` dir under the project), --show-toplevel returns
+# that inner repo's root, so the identity dir shifts for that subtree. This is
+# narrower than the raw-$PWD bug it replaces (which shifted on every cd) and
+# fails safe — the wrong dir simply lacks the keys, forcing a re-pair, never
+# leaking or reusing a private key. Set CLAUDE_PROJECT_DIR (or C2C_DIR) to pin
+# the root explicitly if you work across nested repos.
+#
+# SECURITY: keep this to `rev-parse --show-toplevel` — pure path discovery that
+# runs no hooks/pager/fsmonitor/aliases even in an untrusted repo. Do NOT extend
+# it to git subcommands that touch the index/worktree/output (status, add, log
+# with a pager, …): those re-open code-exec surface (core.fsmonitor / core.pager)
+# when run inside a repo whose config you don't control.
+c2c::_project_root() {
+  if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then printf '%s' "$CLAUDE_PROJECT_DIR"; return; fi
+  local top
+  if top="$(git rev-parse --show-toplevel 2>/dev/null)" && [[ -n "$top" ]]; then
+    printf '%s' "$top"; return
+  fi
+  printf '%s' "$PWD"
+}
+
 # Resolve C2C_DIR + all identity file paths. Two modes:
 #   • explicit C2C_DIR env set → use it verbatim for identity AND config
 #     (back-compat / power users / test isolation).
@@ -82,7 +115,7 @@ c2c::_resolve_dirs() {
     C2C_PROJECT_ROOT=''
     C2C_CONFIG_FILE="$C2C_DIR/config.json"
   else
-    C2C_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$PWD}"
+    C2C_PROJECT_ROOT="$(c2c::_project_root)"
     # Harden the shared tree on every code path (not only on an explicit
     # peer-config write): the global dir holds config.json + all per-project
     # identities, so keep it and projects/ owner-only (700). Otherwise
