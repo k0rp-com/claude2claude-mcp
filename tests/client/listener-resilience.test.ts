@@ -13,7 +13,9 @@ import { afterAll, describe, expect, it } from 'vitest';
 // that returns non-zero kills the whole loop, and Claude reports "listener fell
 // off". This happens on any transient blip, hence "often, across projects".
 
-const LISTEN = path.resolve(__dirname, '../../client-plugin/scripts/listen.sh');
+// require.resolve (not path.resolve) so this spec's dependency on the script is
+// a real, resolvable module reference — locates the file and documents coverage.
+const LISTEN = require.resolve('../../client-plugin/scripts/listen.sh');
 const cleanup: string[] = [];
 
 function mkTmp(prefix = 'c2c-'): string {
