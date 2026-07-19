@@ -49,8 +49,8 @@ describe('peer-listener resilience', () => {
       pid=$!
       sleep 1.2
       if kill -0 "$pid" 2>/dev/null; then echo ALIVE; else echo DEAD; fi
-      # SIGKILL, not TERM: listen.sh traps TERM to clean its pid file but keeps
-      # looping, so a plain kill would leave it running and hang \`wait\`.
+      # SIGKILL is the unconditional stop for teardown (listen.sh now also exits
+      # cleanly on TERM, but -9 can't be trapped/ignored so it never hangs \`wait\`).
       kill -9 "$pid" 2>/dev/null || true
       wait 2>/dev/null || true
     `;

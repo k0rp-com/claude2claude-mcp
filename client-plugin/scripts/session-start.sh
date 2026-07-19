@@ -18,6 +18,15 @@ command -v curl    >/dev/null 2>&1 || exit 0
 command -v jq      >/dev/null 2>&1 || exit 0
 command -v openssl >/dev/null 2>&1 || exit 0
 
+# SessionStart passes a JSON payload on stdin including `source`
+# (startup|clear|resume|compact). We read it (guarding against an interactive
+# stdin so a manual run doesn't hang on `cat`) to special-case /clear below.
+hook_source=""
+if [[ ! -t 0 ]]; then
+  hook_input="$(cat 2>/dev/null || true)"
+  hook_source="$(printf '%s' "$hook_input" | jq -r '.source // ""' 2>/dev/null || echo '')"
+fi
+
 if [[ -z "$C2C_URL" ]]; then
   cat <<'EOF'
 c2c-client: mediator URL не настроен. Сначала выполни /c2c-client:peer-config <url> <token>, затем /c2c-client:peer-name <короткое-имя> — после этого listener будет автоматически подниматься на старте сессии.
@@ -32,21 +41,24 @@ EOF
   exit 0
 fi
 
-# If a listener from a prior session is still alive (Monitor keeps running
-# across /clear), don't tell Claude to launch another one — two listeners
-# would race on the same unacked inbox and double-deliver.
-listener_pid_file="$C2C_DIR/listener.pid"
-if [[ -f "$listener_pid_file" ]]; then
-  pid="$(cat "$listener_pid_file" 2>/dev/null || echo '')"
-  if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-    cat <<'EOF'
-c2c-client: peer-mail listener уже запущен в другой сессии Claude на этой машине (PID-файл жив). Не запускай Monitor — два листенера гонялись бы за одним inbox и доставляли сообщения дважды.
+# Don't tell Claude to launch a second Monitor when a listener is already ours:
+# two listeners would race the same unacked inbox and double-deliver.
+#   - state `mine`: same session id → our listener, plainly.
+#   - source `clear`: /clear keeps the Monitor (and its listener) running; any
+#     live listener afterwards is THIS window's, even if the harness rotated the
+#     session id across the clear (so it now reads `foreign`). Staying silent
+#     avoids needlessly killing and restarting our own listener on every /clear.
+# A foreign/orphaned listener on a NORMAL start is NOT a reason to stay silent:
+# this session is being armed, so it wins — listen.sh takes it over on start.
+listener_state="$(c2c::listener_state)"
+if [[ "$listener_state" == mine ]] \
+  || { [[ "$hook_source" == clear ]] && [[ "$listener_state" == foreign ]]; }; then
+  cat <<'EOF'
+c2c-client: peer-mail listener этой сессии уже запущен (перенесён через /clear). Не запускай Monitor — второй листенер гонялся бы за одним inbox и доставлял сообщения дважды.
 
-Скажи пользователю одной короткой строкой: "👂 peer-listener уже активен в другой сессии — новый не поднимаю".
+Скажи пользователю одной короткой строкой: "👂 peer-listener уже активен в этой сессии".
 EOF
-    exit 0
-  fi
-  rm -f "$listener_pid_file" 2>/dev/null || true
+  exit 0
 fi
 
 cat <<EOF

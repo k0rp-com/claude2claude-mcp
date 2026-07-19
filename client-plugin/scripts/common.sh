@@ -568,6 +568,138 @@ c2c::parse_recipient_and_body() {
   fi
 }
 
+# --- Peer-listener ownership / takeover --------------------------------------
+# The persistent listener (listen.sh) records "PID SESSION_ID" in listener.pid.
+# Only one listener per identity may run — a second races the same unacked inbox
+# and double-delivers. CLAUDE_CODE_SESSION_ID (inherited by the Monitor-spawned
+# listen.sh and by the SessionStart hook) tags the owner so a session can tell
+# ITS OWN listener (carried across /clear — leave it) apart from a foreign or
+# orphaned one from another/closed session (take it over).
+c2c::listener_pid_file() {
+  printf '%s' "$C2C_DIR/listener.pid"
+}
+
+# True iff $1 is a live process that is our listen.sh. Guards PID reuse: after a
+# crash that skipped the EXIT trap (SIGKILL, OOM) the recorded PID may have been
+# recycled to an unrelated process, and we must never signal that innocent.
+c2c::_pid_is_listener() {
+  local pid="$1" args
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  # A zombie (<defunct>) is effectively dead: it can't be draining the inbox, yet
+  # kill -0 keeps succeeding until the parent reaps it and its argv may still read
+  # "listen.sh". Classify it as not-a-listener so we overwrite instead of trying
+  # (uselessly) to TERM/KILL it and then refusing to start. `stat` col is `Z…`.
+  case "$(ps -o stat= -p "$pid" 2>/dev/null)" in Z*) return 1 ;; esac
+  # Match the script PATH component, not a bare "listen.sh" substring: a recycled
+  # PID may belong to a same-uid process that merely mentions the name in argv
+  # (e.g. `vim .../listen.sh`, `tail -f listen.sh.log`). `-ww` stops BSD/`COLUMNS`
+  # width truncation from dropping the script name off a long identity path.
+  args="$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+  case "$args" in
+    */listen.sh|*/listen.sh\ *) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Echo the PID recorded in the pid file (first field), or nothing. Kept separate
+# from c2c::listener_state because both run in a $(...) subshell, so a global set
+# inside them would not reach the caller — the caller reads this value instead.
+c2c::listener_recorded_pid() {
+  local f pid; f="$(c2c::listener_pid_file)"
+  [[ -f "$f" ]] || return 0
+  read -r pid _ < "$f" 2>/dev/null || true
+  printf '%s' "$pid"
+}
+
+# Classify the recorded listener for the CURRENT session. Prints one of:
+#   none    — no pid file
+#   dead    — pid file present but the process is gone or is not our listener
+#             (recycled PID); caller may safely overwrite, never signal it
+#   mine    — a live listener owned by THIS session (leave it alone)
+#   foreign — a live listener owned by another/unknown session (takeover target)
+c2c::listener_state() {
+  local f pid owner
+  f="$(c2c::listener_pid_file)"
+  [[ -f "$f" ]] || { printf 'none'; return 0; }
+  # Line format: "PID SESSION_ID" (SESSION_ID absent in pre-upgrade files).
+  read -r pid owner < "$f" 2>/dev/null || true
+  c2c::_pid_is_listener "$pid" || { printf 'dead'; return 0; }
+  # No session id to reason about ownership (unset var / old harness) → be
+  # conservative and treat any live listener as untouchable, i.e. old behavior:
+  # never kill a listener we cannot prove is foreign. NOTE: a pre-upgrade pid file
+  # with no SESSION_ID field (empty owner) reads as `foreign` when the current
+  # session id is non-empty — a one-time, harmless self-takeover of our own
+  # listener right after upgrading the plugin without restarting the Monitor.
+  if [[ -z "${CLAUDE_CODE_SESSION_ID:-}" || "$owner" == "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+    printf 'mine'
+  else
+    printf 'foreign'
+  fi
+}
+
+# Serialize the state→takeover→claim sequence so two sessions arming at the same
+# instant can't both pass the check and end up with two live listeners on one
+# inbox. mkdir is atomic on POSIX — no flock dependency (flock is absent on stock
+# macOS). Best-effort: a crashed holder's stale lock is stolen; if it can't be
+# acquired within the budget the caller proceeds anyway (degrades to the old,
+# pre-existing race rather than blocking startup). Pair with c2c::listener_unlock.
+c2c::listener_lock() {
+  local lock="$C2C_DIR/listener.lock" holder i
+  mkdir -p "$C2C_DIR" 2>/dev/null || true
+  for i in $(seq 1 30); do            # ~3s
+    if mkdir "$lock" 2>/dev/null; then
+      printf '%s' "$$" > "$lock/pid" 2>/dev/null || true
+      return 0
+    fi
+    holder="$(cat "$lock/pid" 2>/dev/null || echo '')"
+    if [[ "$holder" =~ ^[0-9]+$ ]] && ! kill -0 "$holder" 2>/dev/null; then
+      rm -rf "$lock" 2>/dev/null || true   # steal a dead holder's lock
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+c2c::listener_unlock() {
+  rm -rf "$C2C_DIR/listener.lock" 2>/dev/null || true
+}
+
+# Claim the listener for the current process/session (last step of startup,
+# AFTER any foreign holder is confirmed dead — see c2c::listener_takeover).
+c2c::listener_claim() {
+  local f; f="$(c2c::listener_pid_file)"
+  mkdir -p "$C2C_DIR" 2>/dev/null || true
+  printf '%s %s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$f"
+}
+
+# Take over a foreign listener: SIGTERM, then unconditional SIGKILL. Returns 0
+# once the pid is gone (safe to claim), 1 if it stubbornly survives even SIGKILL.
+# We wait for real death BEFORE the caller claims so the dying listener's
+# `rm -f pidfile` EXIT trap cannot delete a pid file we just wrote (TOCTOU).
+# SIGTERM is sent first for a clean pid-file removal, but bash defers a TERM trap
+# until the current foreground command returns — a listener parked in the ~25s
+# inbox long-poll won't honor it promptly, so we grant only a short grace before
+# the SIGKILL that actually does the work in that (common) case.
+c2c::listener_takeover() {
+  local pid="$1" i
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  for i in $(seq 1 10); do            # ~1s grace for an interruptible exit
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+  for i in $(seq 1 20); do            # ~2s for the kernel to deliver KILL + reap
+    kill -0 "$pid" 2>/dev/null || return 0
+    # KILLed but lingering as an unreaped zombie → effectively gone, safe to claim.
+    case "$(ps -o stat= -p "$pid" 2>/dev/null)" in Z*) return 0 ;; esac
+    sleep 0.1
+  done
+  kill -0 "$pid" 2>/dev/null && return 1
+  return 0
+}
+
 # --- Bootstrap (must run last: c2c::project_slug needs c2c::sha256_hex) ---
 c2c::_resolve_dirs
 c2c::_fill_from_config_file

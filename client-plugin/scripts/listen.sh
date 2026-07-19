@@ -32,22 +32,49 @@ if [[ ! -f "$C2C_IDENTITY_FILE" ]]; then
 fi
 c2c::ensure_identity
 
-# Mutex on the pid file: a second listener on the same identity would race
-# with the first on ?wait inbox calls and cause duplicate delivery (both
-# fetch bodies, one acks, the other sees empty next iteration — but during
-# the overlap window the body is emitted twice).
+# Single-listener mutex on the pid file: a second listener on the same identity
+# would race the first on ?wait inbox calls and double-deliver (both fetch
+# bodies, one acks, but during the overlap window the body is emitted twice).
+# c2c::listener_state distinguishes OUR live listener (carried across /clear —
+# keep it) from a foreign/orphaned one (this session was armed, so it wins).
 mkdir -p "$C2C_DIR"
-C2C_LISTENER_PID_FILE="$C2C_DIR/listener.pid"
-if [[ -f "$C2C_LISTENER_PID_FILE" ]]; then
-  existing_pid="$(cat "$C2C_LISTENER_PID_FILE" 2>/dev/null || echo '')"
-  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
-    echo "⚠️  peer-listener already running (pid=$existing_pid) — not starting a second one"
+C2C_LISTENER_PID_FILE="$(c2c::listener_pid_file)"
+# Serialize state→takeover→claim so two sessions arming at once can't both slip
+# through and leave two live listeners on one inbox. Best-effort: unlock only if
+# we actually acquired it; if we didn't, proceed anyway (see c2c::listener_lock).
+lock_held=0
+c2c::listener_lock && lock_held=1
+existing_pid="$(c2c::listener_recorded_pid)"
+case "$(c2c::listener_state)" in
+  mine)
+    (( lock_held )) && c2c::listener_unlock
+    echo "👂 peer-listener already running in this session (pid=$existing_pid) — not starting a second one"
     exit 0
-  fi
-fi
-echo "$$" > "$C2C_LISTENER_PID_FILE"
+    ;;
+  foreign)
+    # Stop the other/orphaned listener and take the inbox over here. The
+    # TERM→KILL handoff (c2c::listener_takeover) confirms the old process is dead
+    # BEFORE we claim, so its EXIT trap can't wipe our pid file.
+    echo "🔁 taking over peer-listener from another session (old pid=$existing_pid)…"
+    if ! c2c::listener_takeover "$existing_pid"; then
+      (( lock_held )) && c2c::listener_unlock
+      echo "⚠️  could not stop the existing peer-listener (pid=$existing_pid) — not starting a second one to avoid duplicate delivery"
+      exit 0
+    fi
+    ;;
+  # none|dead → nothing live to take over; fall through and claim.
+esac
+c2c::listener_claim
+(( lock_held )) && c2c::listener_unlock
+# Cooperative stop: on INT/TERM remove our pid file AND exit, so when the loop is
+# between polls (or in the sleep after a failure) it halts at once instead of
+# only clearing the file while `while true` keeps polling. Mid-long-poll bash
+# defers the trap until curl returns, so a takeover still relies on the SIGKILL
+# in c2c::listener_takeover — this handles the interruptible windows.
 # shellcheck disable=SC2064
-trap "rm -f '$C2C_LISTENER_PID_FILE'" EXIT INT TERM
+trap "rm -f '$C2C_LISTENER_PID_FILE'" EXIT
+# shellcheck disable=SC2064
+trap "rm -f '$C2C_LISTENER_PID_FILE'; exit 0" INT TERM
 
 # Server caps wait at maxLongPollSeconds (default 30s). Stay a bit under.
 WAIT=25
