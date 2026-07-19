@@ -19,9 +19,9 @@ export function newTestMachine(name = 'm-' + randomBytes(3).toString('hex')): Te
   return { id: idFromPubkey(publicKeyPem), name, publicKeyPem, privateKeyPem };
 }
 
-export function makeApp() {
+export function makeApp(opts: { maxConcurrentLongPoll?: number } = {}) {
   const db = openDb(':memory:');
-  return { app: buildApp(db), db };
+  return { app: buildApp(db, opts), db };
 }
 
 /** Wraps app.request, signing every call with the given machine identity. */

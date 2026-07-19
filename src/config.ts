@@ -10,6 +10,10 @@ const envSchema = z.object({
   HOST: z.string().default('0.0.0.0'),
   PUBLIC_URL: z.string().url().optional(),
   MAX_LONG_POLL_SECONDS: z.coerce.number().int().positive().max(120).default(30),
+  // Max concurrently-held long-polls per identity. Default 64 is generous: one
+  // project identity can be shared by many Claude sessions/subagents, each whose
+  // Stop-hook may hold a long-poll — raise it for heavy same-project fan-out.
+  LONGPOLL_MAX_CONCURRENT: z.coerce.number().int().positive().default(64),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   PAIR_REQUEST_TTL_SECONDS: z.coerce.number().int().positive().default(120),
   CLOCK_SKEW_SECONDS: z.coerce.number().int().nonnegative().default(300),
@@ -32,6 +36,7 @@ export const config = {
   host: env.HOST,
   publicUrl: env.PUBLIC_URL,
   maxLongPollSeconds: env.MAX_LONG_POLL_SECONDS,
+  longpollMaxConcurrent: env.LONGPOLL_MAX_CONCURRENT,
   logLevel: env.LOG_LEVEL,
   pairRequestTtlMs: env.PAIR_REQUEST_TTL_SECONDS * 1000,
   clockSkewMs: env.CLOCK_SKEW_SECONDS * 1000,

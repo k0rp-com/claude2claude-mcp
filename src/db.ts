@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { EventEmitter } from 'node:events';
 import { randomUUID, createHash } from 'node:crypto';
-import { fingerprint as fpOf, idFromPubkey } from './crypto.js';
+import { fingerprint as fpOf, idFromPubkey, samePublicKey } from './crypto.js';
 
 export type MessageKind = 'request' | 'reply' | 'notice';
 
@@ -53,6 +53,11 @@ export interface Db {
   getMachine(id: string): Machine | null;
   getMachineByFingerprint(fp: string): Machine | null;
   touchMachine(id: string): void;
+  /** Delete a machine and cascade: remove its pairings and any messages it sent
+   *  or received. Returns false if no such machine. This is the correct, complete
+   *  revocation — deleting only the machines row would leave pairings behind that
+   *  a re-registration of the same key would silently inherit. */
+  deleteMachine(id: string): { deleted: boolean; pairings: number; messages: number };
 
   // Pair requests
   createPairRequest(args: { fromId: string; toId: string; codeSalt: string; codeHash: string; ttlMs: number }): PairRequest;
@@ -141,6 +146,10 @@ export function openDb(path: string): Db {
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('synchronous = NORMAL');
   sqlite.pragma('foreign_keys = ON');
+  // A second process (pnpm delete-machine) opens the same WAL file; without a
+  // busy_timeout a writer collision throws SQLITE_BUSY immediately instead of
+  // briefly waiting. 5s covers any single txn here.
+  sqlite.pragma('busy_timeout = 5000');
   sqlite.exec(SCHEMA);
 
   const events = new EventEmitter();
@@ -154,6 +163,10 @@ export function openDb(path: string): Db {
   const machGetByFp = sqlite.prepare<[string]>(`SELECT * FROM machines WHERE fingerprint = ?`);
   const machUpdateName = sqlite.prepare<[string, string]>(`UPDATE machines SET name = ? WHERE id = ?`);
   const machTouch = sqlite.prepare<[number, string]>(`UPDATE machines SET last_seen_at = ? WHERE id = ?`);
+  const machDelete = sqlite.prepare<[string]>(`DELETE FROM machines WHERE id = ?`);
+  const pairDeleteAny = sqlite.prepare<[string, string]>(`DELETE FROM pairings WHERE a_id = ? OR b_id = ?`);
+  const msgDeleteAny = sqlite.prepare<[string, string]>(`DELETE FROM messages WHERE from_id = ? OR to_id = ?`);
+  const prDeleteAny = sqlite.prepare<[string, string]>(`DELETE FROM pair_requests WHERE from_id = ? OR to_id = ?`);
 
   // ── pair_requests
   const prInsert = sqlite.prepare<[string, string, string, string, string, number, number]>(`
@@ -209,18 +222,31 @@ export function openDb(path: string): Db {
     // ── machines
     registerMachine({ pubkeyPem, name }) {
       const fp = fpOf(pubkeyPem);
-      const existing = machGetByFp.get(fp) as Machine | undefined;
-      if (existing) {
-        // Same key already registered — treat as rename (idempotent register).
-        // Keep whatever id was previously stored (supports legacy client-chosen ids).
-        machUpdateName.run(name, existing.id);
-        return machGetById.get(existing.id) as Machine;
-      }
-      // New key → derive id deterministically from pubkey. This removes the
-      // TOFU race where a mediator-token holder could claim an arbitrary id.
-      const id = idFromPubkey(pubkeyPem);
-      machInsert.run(id, pubkeyPem, name, fp, Date.now());
-      return machGetById.get(id) as Machine;
+      // Read-then-write in one transaction so a concurrent deleteMachine (a
+      // second process) can't drop the row between the fingerprint lookup and
+      // the rename, which would make machGetById return undefined below.
+      const txn = sqlite.transaction((): Machine => {
+        const existing = machGetByFp.get(fp) as Machine | undefined;
+        if (existing) {
+          // Fingerprint is a truncated (48-bit) hash. Before treating this as an
+          // idempotent re-register (rename), require the FULL public key to match —
+          // otherwise a ~2^48 second-preimage collision on the fingerprint would let
+          // an attacker's differently-keyed register rename a victim's machine (M3).
+          if (!samePublicKey(existing.pubkey_pem, pubkeyPem)) {
+            throw new Error('fingerprint collision with a different key');
+          }
+          // Same key already registered — treat as rename (idempotent register).
+          // Keep whatever id was previously stored (supports legacy client-chosen ids).
+          machUpdateName.run(name, existing.id);
+          return machGetById.get(existing.id) as Machine;
+        }
+        // New key → derive id deterministically from pubkey. This removes the
+        // TOFU race where a mediator-token holder could claim an arbitrary id.
+        const id = idFromPubkey(pubkeyPem);
+        machInsert.run(id, pubkeyPem, name, fp, Date.now());
+        return machGetById.get(id) as Machine;
+      });
+      return txn();
     },
     updateMachineName(id, name) {
       const res = machUpdateName.run(name, id);
@@ -235,6 +261,19 @@ export function openDb(path: string): Db {
     },
     touchMachine(id) {
       machTouch.run(Date.now(), id);
+    },
+    deleteMachine(id) {
+      const txn = sqlite.transaction(() => {
+        const pairings = pairDeleteAny.run(id, id).changes;
+        const messages = msgDeleteAny.run(id, id).changes;
+        // Also drop pending pair_requests to/from this machine — otherwise a
+        // peer could still confirm a stale request and create an orphan pairing
+        // that references the now-deleted machine (invisible to /v1/pairings).
+        prDeleteAny.run(id, id);
+        const deleted = machDelete.run(id).changes > 0;
+        return { deleted, pairings, messages };
+      });
+      return txn();
     },
 
     // ── pair requests
@@ -251,26 +290,32 @@ export function openDb(path: string): Db {
       return prListPendingTo.all(machineId, Date.now()) as PairRequest[];
     },
     consumePairRequest(id, codeProvided, hasher) {
-      const req = prGet.get(id) as PairRequest | undefined;
-      if (!req) return { ok: false, reason: 'not_found' };
-      if (req.status === 'expired') return { ok: false, reason: 'expired' };
-      if (req.status !== 'pending') return { ok: false, reason: 'already_consumed' };
-      if (req.expires_at <= Date.now()) {
-        prSetStatus.run('expired', Date.now(), id);
-        return { ok: false, reason: 'expired' };
-      }
-      prIncAttempts.run(id);
-      const expected = hasher(codeProvided, req.code_salt);
-      if (expected !== req.code_hash) {
-        const updated = prGet.get(id) as PairRequest;
-        if (updated.attempts >= 3) {
-          prSetStatus.run('exhausted', Date.now(), id);
-          return { ok: false, reason: 'exhausted' };
+      // Read → increment attempts → compare → set status, all in one transaction
+      // so concurrent confirms can't race the 3-attempt counter or the pending→
+      // confirmed transition (L6). better-sqlite3 transactions run synchronously.
+      const txn = sqlite.transaction((): ReturnType<Db['consumePairRequest']> => {
+        const req = prGet.get(id) as PairRequest | undefined;
+        if (!req) return { ok: false, reason: 'not_found' };
+        if (req.status === 'expired') return { ok: false, reason: 'expired' };
+        if (req.status !== 'pending') return { ok: false, reason: 'already_consumed' };
+        if (req.expires_at <= Date.now()) {
+          prSetStatus.run('expired', Date.now(), id);
+          return { ok: false, reason: 'expired' };
         }
-        return { ok: false, reason: 'wrong_code' };
-      }
-      prSetStatus.run('confirmed', Date.now(), id);
-      return { ok: true, req: prGet.get(id) as PairRequest };
+        prIncAttempts.run(id);
+        const expected = hasher(codeProvided, req.code_salt);
+        if (expected !== req.code_hash) {
+          const updated = prGet.get(id) as PairRequest;
+          if (updated.attempts >= 3) {
+            prSetStatus.run('exhausted', Date.now(), id);
+            return { ok: false, reason: 'exhausted' };
+          }
+          return { ok: false, reason: 'wrong_code' };
+        }
+        prSetStatus.run('confirmed', Date.now(), id);
+        return { ok: true, req: prGet.get(id) as PairRequest };
+      });
+      return txn();
     },
     rejectPairRequest(id) {
       const res = prSetStatus.run('rejected', Date.now(), id);

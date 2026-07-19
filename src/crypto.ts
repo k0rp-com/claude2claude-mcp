@@ -37,6 +37,21 @@ export function fingerprint(publicKeyPem: string): string {
   return `${h.slice(0, 4)}-${h.slice(4, 8)}-${h.slice(8, 12)}`;
 }
 
+/** Canonical SPKI DER bytes of a public key — independent of PEM whitespace.
+ *  Used to compare two keys by their FULL bytes, not the truncated fingerprint. */
+export function publicKeyDer(publicKeyPem: string): Buffer {
+  return publicKeyFromPem(publicKeyPem).export({ type: 'spki', format: 'der' }) as Buffer;
+}
+
+/** True iff two PEM-encoded public keys are the same key (full-DER compare). */
+export function samePublicKey(aPem: string, bPem: string): boolean {
+  try {
+    return publicKeyDer(aPem).equals(publicKeyDer(bPem));
+  } catch {
+    return false;
+  }
+}
+
 /** Deterministic UUIDv4-format machine id derived from the SPKI DER of the public key.
  *  Used by /v1/register to bind id ↔ pubkey cryptographically. */
 export function idFromPubkey(publicKeyPem: string): string {

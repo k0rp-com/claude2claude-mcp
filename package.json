@@ -10,6 +10,7 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "show-creds": "tsx scripts/show-creds.ts",
+    "delete-machine": "tsx scripts/delete-machine.ts",
     "bump": "tsx scripts/bump-version.ts"
   },
   "pnpm": {

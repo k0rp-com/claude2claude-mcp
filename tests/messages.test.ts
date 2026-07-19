@@ -118,3 +118,38 @@ describe('long-poll inbox wakes on send and on pair-request', () => {
     expect(data.pair_requests.length).toBeGreaterThan(0);
   });
 });
+
+describe('concurrent long-poll cap (L3)', () => {
+  it('caps concurrent long-polls per identity, then releases the slots', async () => {
+    const CAP = 4;
+    const { app } = makeApp({ maxConcurrentLongPoll: CAP });
+    const m = newTestMachine('poller');
+    await registerMachine(app, m);
+    // Hold CAP long-polls open (empty inbox → each parks in the wait branch).
+    const held = Array.from({ length: CAP }, () => authedRequest(app, m, 'GET', '/v1/inbox?wait=1'));
+    await new Promise((r) => setTimeout(r, 150)); // let all CAP enter the wait branch
+    const over = await authedRequest(app, m, 'GET', '/v1/inbox?wait=1');
+    expect(over.status).toBe(429); // (CAP+1)th rejected while CAP are held
+    expect(over.headers.get('retry-after')).toBe('1');
+    await Promise.all(held); // held ones time out (~1s) and release their slots
+    // Counter decremented back down → a fresh long-poll is accepted again.
+    const after = await authedRequest(app, m, 'GET', '/v1/inbox?wait=0');
+    expect(after.status).toBe(200);
+  });
+
+  it('cap is per-identity — a different machine is unaffected', async () => {
+    const CAP = 4;
+    const { app } = makeApp({ maxConcurrentLongPoll: CAP });
+    const a = newTestMachine('a');
+    const b = newTestMachine('b');
+    await registerMachine(app, a);
+    await registerMachine(app, b);
+    const held = Array.from({ length: CAP }, () => authedRequest(app, a, 'GET', '/v1/inbox?wait=1'));
+    await new Promise((r) => setTimeout(r, 150));
+    const aOver = await authedRequest(app, a, 'GET', '/v1/inbox?wait=1');
+    const bOk = await authedRequest(app, b, 'GET', '/v1/inbox?wait=0');
+    expect(aOver.status).toBe(429); // a is at its own cap
+    expect(bOk.status).toBe(200); // b has its own independent budget
+    await Promise.all(held);
+  });
+});

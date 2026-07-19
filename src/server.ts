@@ -1,6 +1,6 @@
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { randomBytes, randomInt } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { Db, Machine, Message, PairRequest } from './db.js';
 import { config } from './config.js';
 import { makeLogger } from './logger.js';
@@ -10,7 +10,13 @@ import { makeNonceCache } from './replay.js';
 
 const log = makeLogger(config.logLevel);
 
-const MAX_BODY_LEN = 64 * 1024;
+export const MAX_BODY_LEN = 64 * 1024;
+
+/** Reject bodies whose ACTUAL byte length exceeds the cap — the Content-Length
+ *  guard is bypassable via chunked transfer-encoding or a forged header (L2). */
+function tooLarge(rawBody: string): boolean {
+  return Buffer.byteLength(rawBody, 'utf8') > MAX_BODY_LEN;
+}
 const MAX_UNACKED_PER_RECIPIENT = 500;
 const MAX_NAME_LEN = 32;
 const PAIR_CODE_DIGITS = 6;
@@ -30,8 +36,23 @@ const RATE_LIMITS = {
   pair:    { capacity: 10, refillPerSec: 0.2 }, // 12/min
   confirm: { capacity: 10, refillPerSec: 0.2 },
   meta:    { capacity: 60, refillPerSec: 5 },
+  // Registration is rare (once per machine). Keyed on the proxy-set forwarded
+  // address only (see the handler) so a token holder / flood can't grow the
+  // machines table without bound (M2). Capacity is generous so manual peer
+  // onboarding never trips it; the real DoS bound is the size-capped bucket Map.
+  register: { capacity: 30, refillPerSec: 0.5 }, // 30/min sustained, 30 burst
 };
 type RateAction = keyof typeof RATE_LIMITS;
+
+/** Constant-time compare for the mediator token so a network attacker can't
+ *  recover it byte-by-byte via response timing (L1). Length difference short-
+ *  circuits (token is a fixed-width 64-hex secret). */
+function tokenEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
 
 interface AppState {
   machine: Machine;
@@ -89,7 +110,7 @@ function serializePairReq(p: PairRequest, peer?: Machine) {
   };
 }
 
-export function buildApp(db: Db) {
+export function buildApp(db: Db, opts: { maxConcurrentLongPoll?: number } = {}) {
   const app = new Hono();
   const limiter = makeLimiter(RATE_LIMITS);
   // Nonce TTL must cover the full accepted clock-skew window on both sides
@@ -97,18 +118,32 @@ export function buildApp(db: Db) {
   // at least until ts+skew is outside the window). 2×skew is the minimum.
   const nonces = makeNonceCache({ ttlMs: 2 * config.clockSkewMs });
 
+  // Bound concurrently-held long-poll connections PER IDENTITY (L3). One machine
+  // could otherwise open many slow long-polls (each holds a socket + 2 event
+  // listeners for up to maxLongPollSeconds) and exhaust sockets/memory in the
+  // 4 GB container. Note one project identity can be shared by many Claude
+  // sessions/subagents (each Stop-hook may hold a poll), so the ceiling is env-
+  // tunable (LONGPOLL_MAX_CONCURRENT, default 64) rather than a hard 1.
+  const MAX_CONCURRENT_LONGPOLL = opts.maxConcurrentLongPoll ?? config.longpollMaxConcurrent;
+  const activeLongPolls = new Map<string, number>();
+
   // Transport-level body size cap (M-3). Rejects before zod/json parsing so
   // a 64 MiB POST cannot be fully buffered by Hono.
   app.use('*', async (c, next) => {
-    const cl = c.req.header('content-length');
-    if (cl && Number(cl) > MAX_BODY_LEN) {
+    const cl = Number(c.req.header('content-length'));
+    if (Number.isFinite(cl) && cl > MAX_BODY_LEN) {
       return c.json({ error: 'payload too large' }, 413);
     }
     return next();
   });
 
-  const rateLimit = (c: Context, action: RateAction) => {
-    const key = (c.get('machine' as never) as Machine | undefined)?.id ?? c.req.header('x-machine-id') ?? c.req.header('x-forwarded-for') ?? 'anon';
+  const rateLimit = (c: Context, action: RateAction, keyOverride?: string) => {
+    // Default key: authenticated machine id. The x-machine-id / x-forwarded-for
+    // fallbacks only matter on pre-auth routes and are CLIENT-CONTROLLED, so a
+    // route where they'd be used must pass an explicit keyOverride that does NOT
+    // trust x-machine-id (see /v1/register). The bucket Map is size-capped in
+    // rateLimit.ts so even a spoofed/rotated key can't grow it unbounded.
+    const key = keyOverride ?? (c.get('machine' as never) as Machine | undefined)?.id ?? c.req.header('x-machine-id') ?? c.req.header('x-forwarded-for') ?? 'anon';
     const r = limiter.check(key, action);
     if (!r.ok) return c.json({ error: 'rate limited', retry_after: r.retryAfterSec }, 429, { 'Retry-After': String(r.retryAfterSec) });
     return null;
@@ -122,15 +157,22 @@ export function buildApp(db: Db) {
   // Machine id is DERIVED SERVER-SIDE from the pubkey — clients no longer choose it
   // (removes the TOFU race where a token holder could claim arbitrary ids).
   app.post('/v1/register', async (c) => {
+    // Key ONLY on the proxy-set forwarded address (never the client-controlled
+    // x-machine-id, which register doesn't authenticate) so the cap can't be
+    // sidestepped by rotating that header. Behind the container's TLS proxy this
+    // is the real client IP; with no proxy it collapses to 'anon' (a coarse
+    // shared backstop — the token gate below is the primary control).
+    const limited = rateLimit(c, 'register', c.req.header('x-forwarded-for') ?? 'anon'); if (limited) return limited;
     const tokenHdr = c.req.header('authorization') ?? '';
     const m = /^Bearer\s+(.+)$/i.exec(tokenHdr);
-    if (!m || m[1] !== config.mediatorToken) {
+    if (!m || !tokenEqual(m[1]!, config.mediatorToken)) {
       return c.json({ error: 'invalid mediator token' }, 401);
     }
 
     // Read raw body once — signature must be verified over the actual bytes
     // the server received, not a reconstructed object.
     const rawBody = await c.req.text();
+    if (tooLarge(rawBody)) return c.json({ error: 'payload too large' }, 413);
     let payload: Record<string, unknown>;
     try { payload = JSON.parse(rawBody); } catch { return c.json({ error: 'invalid json' }, 400); }
 
@@ -156,7 +198,9 @@ export function buildApp(db: Db) {
       method: 'POST', path: '/v1/register', timestampMs: ts, nonce, body: bodyForSig,
     }, signature);
     if (!ok) return c.json({ error: 'signature verification failed' }, 400);
-    nonces.remember(nonce);
+    // Atomic claim (mirrors the authed middleware) — closes any check-then-set
+    // race and reserves the nonce only after a valid self-proof.
+    if (!nonces.checkAndRemember(nonce)) return c.json({ error: 'nonce reused' }, 400);
 
     try {
       const machine = db.registerMachine({ pubkeyPem: public_key_pem, name });
@@ -188,6 +232,8 @@ export function buildApp(db: Db) {
     if (Math.abs(Date.now() - ts) > config.clockSkewMs) {
       return c.json(AUTH_FAIL, 401, { 'X-C2C-Auth-Reason': 'timestamp' });
     }
+    // Cheap early reject for already-seen nonces (avoids body read + verify).
+    // NOT the authoritative gate — see the atomic checkAndRemember below.
     if (nonces.has(nonce)) return c.json(AUTH_FAIL, 401, { 'X-C2C-Auth-Reason': 'nonce' });
 
     const machine = db.getMachine(machineId);
@@ -197,6 +243,7 @@ export function buildApp(db: Db) {
 
     // Read body to use in signature canonicalization.
     const rawBody = await c.req.text();
+    if (tooLarge(rawBody)) return c.json({ error: 'payload too large' }, 413);
     const ok = verifyRequest(machine.pubkey_pem, {
       method: c.req.method,
       path: new URL(c.req.url).pathname + (new URL(c.req.url).search || ''),
@@ -205,7 +252,14 @@ export function buildApp(db: Db) {
       body: rawBody,
     }, sig);
     if (!ok) return c.json(AUTH_FAIL, 401, { 'X-C2C-Auth-Reason': 'signature' });
-    nonces.remember(nonce);
+    // Authoritative replay gate, AFTER the `await` above so it closes the
+    // check-then-set race: `has()` ran before the body read yielded the event
+    // loop, letting a concurrent duplicate of the same signed request slip past.
+    // checkAndRemember is fully synchronous, so exactly one of two racing
+    // duplicates wins here (M1).
+    if (!nonces.checkAndRemember(nonce)) {
+      return c.json(AUTH_FAIL, 401, { 'X-C2C-Auth-Reason': 'nonce' });
+    }
 
     // Re-attach the buffered body for handlers that re-read it.
     if (rawBody) {
@@ -317,13 +371,18 @@ export function buildApp(db: Db) {
     if (!req) return c.json({ error: 'pair request not found' }, 404);
     if (req.to_id !== me(c).id) return c.json({ error: 'this pair request is not for you' }, 403);
 
+    // The initiator may have been revoked (pnpm delete-machine) after creating
+    // this request — don't commit a pairing that references a machine that no
+    // longer exists (would be an uncleanable orphan, invisible to /v1/pairings).
+    const peer = db.getMachine(req.from_id);
+    if (!peer) return c.json({ error: 'peer no longer exists' }, 409);
+
     const result = db.consumePairRequest(parsed.data.request_id, parsed.data.code, hashCode);
     if (!result.ok) {
       log.warn('pair_confirm.failed', { reason: result.reason, req: req.id });
       return c.json({ error: result.reason }, result.reason === 'wrong_code' ? 403 : 400);
     }
     db.createPairing(result.req.from_id, result.req.to_id);
-    const peer = db.getMachine(result.req.from_id)!;
     log.info('pairing.created', { a: result.req.from_id, b: result.req.to_id });
     return c.json({ pairing: { peer: serializeMachine(peer), paired_at: Date.now() } });
   });
@@ -413,8 +472,12 @@ export function buildApp(db: Db) {
     const sinceRaw = c.req.query('since');
     const waitRaw = c.req.query('wait');
     const peek = c.req.query('peek') === '1' || c.req.query('peek') === 'true';
-    const since = sinceRaw ? Math.max(0, Number(sinceRaw)) : 0;
-    const waitSec = Math.min(config.maxLongPollSeconds, Math.max(0, waitRaw ? Number(waitRaw) : 0));
+    // Guard against NaN from malformed query params (e.g. ?since=abc) — an
+    // unguarded NaN flows into the SQLite bind / Math.min and degrades oddly (L4).
+    const sinceN = Number(sinceRaw);
+    const since = sinceRaw && Number.isFinite(sinceN) ? Math.max(0, sinceN) : 0;
+    const waitN = Number(waitRaw);
+    const waitSec = Math.min(config.maxLongPollSeconds, waitRaw && Number.isFinite(waitN) ? Math.max(0, waitN) : 0);
     db.expirePairRequests(Date.now());
 
     const fetchPeek = () => ({
@@ -442,28 +505,51 @@ export function buildApp(db: Db) {
       r.messages.length === 0 && r.pair_requests.length === 0;
 
     if (isEmpty(result) && waitSec > 0) {
-      result = await new Promise((resolve) => {
-        let done = false;
-        const msgChan = `inbox:${meId}`;
-        const prChan = `pair:${meId}`;
-        const wake = () => {
-          if (done) return; done = true;
-          db.events.off(msgChan, wake); db.events.off(prChan, wake);
-          clearTimeout(timer);
-          resolve(fetcher());
-        };
-        const timer = setTimeout(() => {
-          if (done) return; done = true;
-          db.events.off(msgChan, wake); db.events.off(prChan, wake);
-          resolve(fetcher());
-        }, waitSec * 1000);
-        db.events.on(msgChan, wake); db.events.on(prChan, wake);
-        c.req.raw.signal?.addEventListener('abort', () => {
-          if (done) return; done = true;
-          db.events.off(msgChan, wake); db.events.off(prChan, wake); clearTimeout(timer);
-          resolve(peek ? { peek: true, messages: [], pair_requests: [] } : { messages: [], pair_requests: [] });
-        }, { once: true });
-      });
+      const held = activeLongPolls.get(meId) ?? 0;
+      if (held >= MAX_CONCURRENT_LONGPOLL) {
+        // Too many concurrent long-polls for this identity. Return 429 (not a 200
+        // with an empty body) so the client's listen loop backs off instead of
+        // re-opening immediately in a CPU-spinning busy loop.
+        return c.json({ error: 'too many concurrent long-polls', retry_after: 1 }, 429, { 'Retry-After': '1' });
+      }
+      activeLongPolls.set(meId, held + 1);
+      try {
+        result = await new Promise((resolve) => {
+          let done = false;
+          const msgChan = `inbox:${meId}`;
+          const prChan = `pair:${meId}`;
+          const empty = peek
+            ? { peek: true, messages: [], pair_requests: [] }
+            : { messages: [], pair_requests: [] };
+          // Settle with an empty result if fetcher() throws (e.g. SQLITE_BUSY)
+          // inside the timer/emit callback — otherwise the throw escapes on that
+          // stack, the promise never resolves, the `finally` never runs, and the
+          // identity's long-poll slot leaks (would wedge it at the cap).
+          const settle = () => { try { resolve(fetcher()); } catch { resolve(empty); } };
+          const wake = () => {
+            if (done) return; done = true;
+            db.events.off(msgChan, wake); db.events.off(prChan, wake);
+            clearTimeout(timer);
+            settle();
+          };
+          const timer = setTimeout(() => {
+            if (done) return; done = true;
+            db.events.off(msgChan, wake); db.events.off(prChan, wake);
+            settle();
+          }, waitSec * 1000);
+          db.events.on(msgChan, wake); db.events.on(prChan, wake);
+          c.req.raw.signal?.addEventListener('abort', () => {
+            if (done) return; done = true;
+            db.events.off(msgChan, wake); db.events.off(prChan, wake); clearTimeout(timer);
+            resolve(empty);
+          }, { once: true });
+        });
+      } finally {
+        // Decrement in finally so wake / timeout / abort / throw all release the
+        // slot — a leak here would eventually wedge this identity at the cap.
+        const cur = (activeLongPolls.get(meId) ?? 1) - 1;
+        if (cur <= 0) activeLongPolls.delete(meId); else activeLongPolls.set(meId, cur);
+      }
     }
 
     return c.json(result);

@@ -13,6 +13,14 @@
 export interface NonceCache {
   has(nonce: string): boolean;
   remember(nonce: string): void;
+  /**
+   * Atomically claim a nonce: returns true if it was fresh (and is now
+   * remembered), false if it was already seen within the TTL window.
+   * Fully synchronous — no await/yield between the read and the write — so it
+   * closes the check-then-set replay race that `has()` + `remember()` around an
+   * `await` (e.g. reading the request body) would otherwise leave open.
+   */
+  checkAndRemember(nonce: string): boolean;
 }
 
 export function makeNonceCache(opts: { ttlMs: number; maxEntries?: number } = { ttlMs: 10 * 60_000 }): NonceCache {
@@ -28,29 +36,38 @@ export function makeNonceCache(opts: { ttlMs: number; maxEntries?: number } = { 
     }
   };
 
+  const isSeen = (nonce: string): boolean => {
+    const t = seen.get(nonce);
+    if (t === undefined) return false;
+    if (t < Date.now() - ttlMs) {
+      seen.delete(nonce);
+      return false;
+    }
+    return true;
+  };
+
+  const store = (nonce: string): void => {
+    sweep();
+    if (seen.size >= maxEntries) {
+      // Shouldn't happen under normal load — sweep kept it bounded. Defence in depth:
+      // drop the oldest entries regardless of age.
+      const toDrop = Math.max(1, Math.floor(maxEntries * 0.1));
+      let i = 0;
+      for (const k of seen.keys()) {
+        seen.delete(k);
+        if (++i >= toDrop) break;
+      }
+    }
+    seen.set(nonce, Date.now());
+  };
+
   return {
-    has(nonce) {
-      const t = seen.get(nonce);
-      if (t === undefined) return false;
-      if (t < Date.now() - ttlMs) {
-        seen.delete(nonce);
-        return false;
-      }
+    has: isSeen,
+    remember: store,
+    checkAndRemember(nonce) {
+      if (isSeen(nonce)) return false;
+      store(nonce);
       return true;
-    },
-    remember(nonce) {
-      sweep();
-      if (seen.size >= maxEntries) {
-        // Shouldn't happen under normal load — sweep kept it bounded. Defence in depth:
-        // drop the oldest entries regardless of age.
-        const toDrop = Math.max(1, Math.floor(maxEntries * 0.1));
-        let i = 0;
-        for (const k of seen.keys()) {
-          seen.delete(k);
-          if (++i >= toDrop) break;
-        }
-      }
-      seen.set(nonce, Date.now());
     },
   };
 }

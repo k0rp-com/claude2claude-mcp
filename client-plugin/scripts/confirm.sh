@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Accept an incoming pair request by entering the code shown on the other side.
-# Usage: confirm.sh <4-digit-code>
+# Usage: confirm.sh <6-digit-code>
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh

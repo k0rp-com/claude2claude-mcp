@@ -21,6 +21,7 @@ pnpm test             # vitest run, forks pool, singleFork (tests share DB state
 pnpm test:watch
 pnpm typecheck        # tsc --noEmit
 pnpm show-creds       # prints URL + MEDIATOR_TOKEN + client install steps
+pnpm delete-machine <fingerprint|id>  # complete revocation: machine + its pairings + its messages (one txn)
 pnpm bump             # scripts/bump-version.ts — marketplace version bump
 ```
 
