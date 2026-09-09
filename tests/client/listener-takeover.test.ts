@@ -176,7 +176,25 @@ describe('c2c-client peer-listener ownership/takeover', () => {
     expect(owner).toBe('s1');
   });
 
-  it('concurrency/stubborn: takeover escalates to KILL when the process ignores TERM', () => {
+  it('concurrency/stubborn: takeover escalates to KILL when the listener ignores TERM', () => {
+    const { home, c2cDir } = setup();
+    const stubborn = path.join(c2cDir, 'listen.sh');
+    writeFileSync(stubborn, '#!/usr/bin/env bash\ntrap "" TERM INT\nsleep 60\n');
+    const out = sh(
+      `
+      bash "${stubborn}" >/dev/null 2>&1 &
+      pid=$!
+      sleep 0.2
+      c2c::listener_takeover "$pid" && echo "RC0" || echo "RC1"
+      if kill -0 "$pid" 2>/dev/null; then echo "ALIVE"; else echo "DEAD"; fi
+      kill -9 "$pid" 2>/dev/null || true
+      `,
+      { HOME: home, C2C_DIR: c2cDir, CLAUDE_CODE_SESSION_ID: 's1' },
+    );
+    expect(out).toBe('RC0\nDEAD');
+  });
+
+  it('PID reuse: takeover never signals a live process that is not our listener', () => {
     const { home, c2cDir } = setup();
     const out = sh(
       `
@@ -189,7 +207,7 @@ describe('c2c-client peer-listener ownership/takeover', () => {
       `,
       { HOME: home, C2C_DIR: c2cDir, CLAUDE_CODE_SESSION_ID: 's1' },
     );
-    expect(out).toBe('RC0\nDEAD');
+    expect(out).toBe('RC0\nALIVE');
   });
 
   it('listener_claim writes "PID SESSION_ID"', () => {

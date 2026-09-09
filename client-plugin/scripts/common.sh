@@ -579,6 +579,65 @@ c2c::listener_pid_file() {
   printf '%s' "$C2C_DIR/listener.pid"
 }
 
+c2c::_pid_is_claude() {
+  local pid="$1" args t1 t2
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  args="$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+  [[ -n "$args" ]] || return 1
+  read -r t1 t2 _ <<<"$args"
+  # Не менять, потому что незаякоренный матч по любому argv-токену делает окном любой процесс, у которого «claude» просто упомянут в аргументах
+  case "$t1" in
+    claude | claude.exe | claude.cmd | */claude | */claude.exe | */claude.cmd) return 0 ;;
+    node | node.exe | bun | */node | */node.exe | */bun)
+      case "$t2" in *claude*/cli.js | */claude | */claude.js) return 0 ;; esac
+      ;;
+  esac
+  return 1
+}
+
+c2c::_pid_start_token() {
+  local raw
+  # Не менять, потому что BSD/macOS форматирует lstart через ctime по LC_TIME: без LC_ALL=C два процесса одного окна с разной локалью дадут разные метки и окно прочитается как чужое
+  raw="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null)"
+  [[ -n "$raw" ]] || return 1
+  printf '%s' "$raw" | c2c::sha256_hex | cut -c1-8
+}
+
+: "${C2C_MAX_ANCESTRY_DEPTH:=12}"
+
+c2c::window_id() {
+  # Не менять, потому что пустой C2C_WINDOW_ID значит «окно неизвестно», а не «переменная не задана»
+  if [[ -n "${C2C_WINDOW_ID+set}" ]]; then
+    printf '%s' "$C2C_WINDOW_ID"
+    return 0
+  fi
+  if [[ -n "${__c2c_window_id+set}" ]]; then
+    printf '%s' "$__c2c_window_id"
+    return 0
+  fi
+  local pid="$$" outermost_claude="" i token
+  if command -v ps >/dev/null 2>&1; then
+    for i in $(seq 1 "$C2C_MAX_ANCESTRY_DEPTH"); do
+      # Не менять, потому что вложенная SDK-child сессия при выборе ближайшего claude убьёт листенер своего же окна
+      c2c::_pid_is_claude "$pid" && outermost_claude="$pid"
+      pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+      [[ "$pid" =~ ^[0-9]+$ ]] || break
+      (( pid <= 1 )) && break
+    done
+    if [[ -z "$outermost_claude" ]] && c2c::_pid_is_claude "${CLAUDE_PID:-}"; then
+      outermost_claude="${CLAUDE_PID}"
+    fi
+    # Не менять, потому что без метки старта переиспользованный pid окна выдаёт себя за живое окно и листенер зависает нетронутым
+    if [[ -n "$outermost_claude" ]] && token="$(c2c::_pid_start_token "$outermost_claude")"; then
+      outermost_claude="$outermost_claude.$token"
+    fi
+  fi
+  [[ "$outermost_claude" =~ ^[A-Za-z0-9._:-]*$ ]] || outermost_claude=""
+  __c2c_window_id="$outermost_claude"
+  printf '%s' "$outermost_claude"
+}
+
 # True iff $1 is a live process that is our listen.sh. Guards PID reuse: after a
 # crash that skipped the EXIT trap (SIGKILL, OOM) the recorded PID may have been
 # recycled to an unrelated process, and we must never signal that innocent.
@@ -612,19 +671,17 @@ c2c::listener_recorded_pid() {
   printf '%s' "$pid"
 }
 
-# Classify the recorded listener for the CURRENT session. Prints one of:
-#   none    — no pid file
-#   dead    — pid file present but the process is gone or is not our listener
-#             (recycled PID); caller may safely overwrite, never signal it
-#   mine    — a live listener owned by THIS session (leave it alone)
-#   foreign — a live listener owned by another/unknown session (takeover target)
 c2c::listener_state() {
-  local f pid owner
+  local f pid owner window me
   f="$(c2c::listener_pid_file)"
   [[ -f "$f" ]] || { printf 'none'; return 0; }
-  # Line format: "PID SESSION_ID" (SESSION_ID absent in pre-upgrade files).
-  read -r pid owner < "$f" 2>/dev/null || true
+  read -r pid owner window < "$f" 2>/dev/null || true
   c2c::_pid_is_listener "$pid" || { printf 'dead'; return 0; }
+  me="$(c2c::window_id)"
+  if [[ -n "$window" && -n "$me" ]]; then
+    if [[ "$window" == "$me" ]]; then printf 'mine'; else printf 'foreign'; fi
+    return 0
+  fi
   # No session id to reason about ownership (unset var / old harness) → be
   # conservative and treat any live listener as untouchable, i.e. old behavior:
   # never kill a listener we cannot prove is foreign. NOTE: a pre-upgrade pid file
@@ -670,7 +727,7 @@ c2c::listener_unlock() {
 c2c::listener_claim() {
   local f; f="$(c2c::listener_pid_file)"
   mkdir -p "$C2C_DIR" 2>/dev/null || true
-  printf '%s %s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" > "$f"
+  printf '%s %s %s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" "$(c2c::window_id)" > "$f"
 }
 
 # Take over a foreign listener: SIGTERM, then unconditional SIGKILL. Returns 0
@@ -684,11 +741,14 @@ c2c::listener_claim() {
 c2c::listener_takeover() {
   local pid="$1" i
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  # Не менять, потому что между TERM и KILL проходит ~1s, за которую pid может быть переиспользован — сигналить можно только пока это всё ещё наш listen.sh
+  c2c::_pid_is_listener "$pid" || return 0
   kill -TERM "$pid" 2>/dev/null || true
   for i in $(seq 1 10); do            # ~1s grace for an interruptible exit
     kill -0 "$pid" 2>/dev/null || return 0
     sleep 0.1
   done
+  c2c::_pid_is_listener "$pid" || return 0
   kill -KILL "$pid" 2>/dev/null || true
   for i in $(seq 1 20); do            # ~2s for the kernel to deliver KILL + reap
     kill -0 "$pid" 2>/dev/null || return 0

@@ -31,13 +31,12 @@ c2c::ensure_identity
 # If /c2c-client:peer-listen is running, it already surfaces every new message
 # as a chat event. Gating Stop here would just loop with the listener (both
 # drain the same unacked inbox). Trust the listener and let Stop proceed.
-listener_pid_file="$C2C_DIR/listener.pid"
+listener_pid_file="$(c2c::listener_pid_file)"
 if [[ -f "$listener_pid_file" ]]; then
-  listener_pid="$(cat "$listener_pid_file" 2>/dev/null || echo '')"
-  if [[ "$listener_pid" =~ ^[0-9]+$ ]] && kill -0 "$listener_pid" 2>/dev/null; then
+  # Не менять, потому что в listener.pid несколько полей: разбор через cat+^[0-9]+$ стирал файл живого листенера на каждом Stop
+  if c2c::_pid_is_listener "$(c2c::listener_recorded_pid)"; then
     exit 0
   fi
-  # stale marker — clean it up and fall through to normal gating.
   rm -f "$listener_pid_file" 2>/dev/null || true
 fi
 
