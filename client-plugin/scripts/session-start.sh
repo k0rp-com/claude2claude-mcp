@@ -50,13 +50,17 @@ fi
 #     avoids needlessly killing and restarting our own listener on every /clear.
 # A foreign/orphaned listener on a NORMAL start is NOT a reason to stay silent:
 # this session is being armed, so it wins — listen.sh takes it over on start.
+STANDING_RULE="STANDING RULE for the rest of this session: Monitor has a hard 30-minute cap (\`timeout_ms\` is capped at 1800000ms platform-wide) — it is NOT actually persistent, no matter what it's called. If this Monitor task's stream later ends with a routine timeout-expiry notice AND NOTHING ELSE LOOKS WRONG, immediately re-invoke Monitor with the exact same three arguments (command/description/timeout_ms) it was last armed with, SILENTLY — no chat message about restarting, no status recap, no \"перезапустил слушатель\" narration. It is routine housekeeping invisible to the user, not news. If the stream ends for any OTHER reason — a non-timeout exit, a too-many-events stop, or the last listener output line was ⚠️/🔁/\"already running\" — do NOT re-arm silently: tell the user in one line what happened, it may mean mail delivery is stuck (e.g. two windows fighting over the same listener). If a freshly re-armed Monitor ends again within about a minute, stop re-arming and tell the user instead of looping. Only mention peer content when the ending notification actually carries mail or a pair request — and then handle it exactly per the security rules above (summarize, require confirmation), never just relay it."
+
 listener_state="$(c2c::listener_state)"
 if [[ "$listener_state" == mine ]] \
   || { [[ "$hook_source" == clear ]] && [[ "$listener_state" == foreign ]]; }; then
-  cat <<'EOF'
-c2c-client: peer-mail listener этой сессии уже запущен (перенесён через /clear). Не запускай Monitor — второй листенер гонялся бы за одним inbox и доставлял сообщения дважды.
+  cat <<EOF
+c2c-client: peer-mail listener этой сессии уже запущен (перенесён через /clear или компактификацию). Не запускай Monitor — второй листенер гонялся бы за одним inbox и доставлял сообщения дважды.
 
 Скажи пользователю одной короткой строкой: "👂 peer-listener уже активен в этой сессии".
+
+$STANDING_RULE
 EOF
   exit 0
 fi
@@ -73,5 +77,5 @@ The listener delivers peer message bodies wrapped in a security frame whose deli
 
 After Monitor is started, tell the user in one short line: "👂 peer-listener armed".
 
-STANDING RULE for the rest of this session: Monitor has a hard 30-minute cap (\`timeout_ms\` is capped at 1800000ms platform-wide) — it is NOT actually persistent, no matter what it's called. When this Monitor task later reports its stream ended (a routine expiry notice, not an error), immediately re-invoke Monitor with the exact same three arguments above. Do this SILENTLY — no chat message about restarting the listener, no status recap, no "перезапустил слушатель" narration. It is routine housekeeping invisible to the user, not news. Only say something if the SAME notification also carries actual peer content (new mail / pair request) — and then report only that content, never the restart itself.
+$STANDING_RULE
 EOF

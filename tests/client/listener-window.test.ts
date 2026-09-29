@@ -350,6 +350,7 @@ describe('SessionStart arming decision', () => {
       });
       expect(out).not.toMatch(/Monitor tool right now/);
       expect(out).toMatch(/уже запущен/);
+      expect(out).toMatch(/STANDING RULE/);
     });
   }
 
@@ -361,5 +362,68 @@ describe('SessionStart arming decision', () => {
       C2C_WINDOW_ID: '9999',
     });
     expect(out).toMatch(/Monitor tool right now/);
+  });
+});
+
+describe('SessionStart Monitor-arm instructions', () => {
+  function freshArmOutput(): string {
+    const s = setup();
+    writeFileSync(
+      path.join(s.c2cDir, 'identity.json'),
+      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
+    );
+    writeFileSync(path.join(s.c2cDir, 'name.txt'), 'probe\n');
+    return execFileSync('bash', ['-c', `printf '{"source":"startup"}' | "${SESSION_START}"`], {
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: s.home,
+        C2C_DIR: s.c2cDir,
+        C2C_URL: 'http://127.0.0.1:9',
+        CLAUDE_CODE_SESSION_ID: 's1',
+        C2C_WINDOW_ID: '4242',
+      },
+      encoding: 'utf8',
+    });
+  }
+
+  it('passes an explicit 30-minute timeout_ms, not the non-existent persistent flag', () => {
+    const out = freshArmOutput();
+    expect(out).toMatch(/timeout_ms:\s*1800000/);
+    expect(out).not.toMatch(/persistent:\s*true/);
+  });
+
+  it('carries a standing rule to re-arm silently on expiry, with an exception for real peer content', () => {
+    const out = freshArmOutput();
+    expect(out).toMatch(/re-invoke Monitor/i);
+    expect(out).toMatch(/SILENTLY/);
+    expect(out).toMatch(/carries mail or a pair request/i);
+  });
+
+  it('does not tell Claude to re-arm silently for a non-timeout stream end', () => {
+    const out = freshArmOutput();
+    expect(out).toMatch(/do NOT re-arm silently/i);
+    expect(out).toMatch(/already running/i);
+  });
+
+  it('caps the silent-re-arm loop if the listener dies again right away', () => {
+    const out = freshArmOutput();
+    expect(out).toMatch(/ends again within about a minute/i);
+    expect(out).toMatch(/stop re-arming/i);
+  });
+});
+
+describe('peer-listen.md is in sync with the SessionStart Monitor contract', () => {
+  const PEER_LISTEN_MD = path.resolve(__dirname, '../../client-plugin/commands/peer-listen.md');
+
+  it('passes timeout_ms instead of the non-existent persistent flag', () => {
+    const md = readFileSync(PEER_LISTEN_MD, 'utf8');
+    expect(md).toMatch(/timeout_ms.*1800000/);
+    expect(md).not.toMatch(/persistent.*true/);
+  });
+
+  it('carries the same silent-re-arm standing rule as SessionStart', () => {
+    const md = readFileSync(PEER_LISTEN_MD, 'utf8');
+    expect(md).toMatch(/silently/i);
+    expect(md).toMatch(/do NOT re-arm silently/i);
   });
 });
