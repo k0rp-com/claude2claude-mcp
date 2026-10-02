@@ -28,6 +28,92 @@ afterAll(() => {
   for (const d of cleanup) rmSync(d, { recursive: true, force: true });
 });
 
+describe('peer-listener startup banner does not wake the session', () => {
+  it('prints nothing on stdout at startup — the armed banner goes to stderr', () => {
+    const home = mkTmp('home-');
+    const c2cDir = path.join(home, 'c2c');
+    mkdirSync(c2cDir, { recursive: true });
+    writeFileSync(
+      path.join(c2cDir, 'identity.json'),
+      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
+    );
+
+    const wrapper = `
+      set -u
+      "${LISTEN}" >"\${STDOUT_FILE}" 2>"\${STDERR_FILE}" &
+      pid=$!
+      sleep 1.2
+      kill -9 "$pid" 2>/dev/null || true
+      wait 2>/dev/null || true
+    `;
+    const stdoutFile = path.join(c2cDir, 'stdout.log');
+    const stderrFile = path.join(c2cDir, 'stderr.log');
+    writeFileSync(stdoutFile, '');
+    writeFileSync(stderrFile, '');
+    execFileSync('bash', ['-c', wrapper], {
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: home,
+        C2C_DIR: c2cDir,
+        C2C_URL: 'http://127.0.0.1:9',
+        STDOUT_FILE: stdoutFile,
+        STDERR_FILE: stderrFile,
+      },
+      encoding: 'utf8',
+    });
+
+    const stdout = require('node:fs').readFileSync(stdoutFile, 'utf8');
+    const stderr = require('node:fs').readFileSync(stderrFile, 'utf8');
+    expect(stdout).toBe('');
+    expect(stderr).toMatch(/peer-mail listener armed/);
+  });
+});
+
+describe('only the startup banner moved to stderr — mutex decision lines stay on stdout', () => {
+  it('"already running" goes to stdout, not stderr, so the standing rule can still see it', () => {
+    const home = mkTmp('home-');
+    const c2cDir = path.join(home, 'c2c');
+    mkdirSync(c2cDir, { recursive: true });
+    writeFileSync(
+      path.join(c2cDir, 'identity.json'),
+      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
+    );
+    const fakeListenerPath = path.join(c2cDir, 'listen.sh');
+    writeFileSync(fakeListenerPath, '#!/usr/bin/env bash\nsleep 60\n');
+
+    const stdoutFile = path.join(c2cDir, 'stdout.log');
+    const stderrFile = path.join(c2cDir, 'stderr.log');
+    writeFileSync(stdoutFile, '');
+    writeFileSync(stderrFile, '');
+
+    const wrapper = `
+      set -u
+      bash "${fakeListenerPath}" >/dev/null 2>&1 &
+      pid=$!
+      printf '%s s1 4242\\n' "$pid" > "${path.join(c2cDir, 'listener.pid')}"
+      "${LISTEN}" >"${stdoutFile}" 2>"${stderrFile}"
+      kill -9 "$pid" 2>/dev/null || true
+      wait 2>/dev/null || true
+    `;
+    execFileSync('bash', ['-c', wrapper], {
+      env: {
+        PATH: process.env.PATH ?? '',
+        HOME: home,
+        C2C_DIR: c2cDir,
+        C2C_URL: 'http://127.0.0.1:9',
+        CLAUDE_CODE_SESSION_ID: 's1',
+        C2C_WINDOW_ID: '4242',
+      },
+      encoding: 'utf8',
+    });
+
+    const stdout = require('node:fs').readFileSync(stdoutFile, 'utf8');
+    const stderr = require('node:fs').readFileSync(stderrFile, 'utf8');
+    expect(stdout).toMatch(/already running in this session/);
+    expect(stderr).toBe('');
+  });
+});
+
 describe('peer-listener resilience', () => {
   it('survives a transient mediator failure instead of exiting (no errexit leak from common.sh)', () => {
     const home = mkTmp('home-');

@@ -127,7 +127,8 @@ emit_pair() {
     <<<"$1"
 }
 
-echo "👂 peer-mail listener armed (long-poll ${WAIT}s; bodies delivered inline with security frame)"
+# Не менять, потому что Monitor трактует любую stdout-строку как chat-событие независимо от содержимого — эта строка на stdout будила сессию на КАЖДЫЙ 30-минутный рестарт листенера, хотя "armed" уже сообщается явным текстом из session-start.sh/peer-listen.md
+echo "👂 peer-mail listener armed (long-poll ${WAIT}s; bodies delivered inline with security frame)" >&2
 
 while true; do
   # Non-peek: server returns bodies AND includes them in the response.
