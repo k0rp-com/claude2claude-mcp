@@ -568,43 +568,65 @@ c2c::parse_recipient_and_body() {
   fi
 }
 
-# --- Peer-listener ownership / takeover --------------------------------------
-# The persistent listener (listen.sh) records "PID SESSION_ID" in listener.pid.
-# Only one listener per identity may run — a second races the same unacked inbox
-# and double-delivers. CLAUDE_CODE_SESSION_ID (inherited by the Monitor-spawned
-# listen.sh and by the SessionStart hook) tags the owner so a session can tell
-# ITS OWN listener (carried across /clear — leave it) apart from a foreign or
-# orphaned one from another/closed session (take it over).
 c2c::listener_pid_file() {
   printf '%s' "$C2C_DIR/listener.pid"
 }
 
 c2c::_pid_is_claude() {
-  local pid="$1" args t1 t2
+  local pid="$1" args tok
+  local -a argv
   [[ "$pid" =~ ^[0-9]+$ ]] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   args="$(ps -ww -o args= -p "$pid" 2>/dev/null)"
   [[ -n "$args" ]] || return 1
-  read -r t1 t2 _ <<<"$args"
+  read -r -a argv <<<"$args"
   # Не менять, потому что незаякоренный матч по любому argv-токену делает окном любой процесс, у которого «claude» просто упомянут в аргументах
-  case "$t1" in
+  case "${argv[0]}" in
     claude | claude.exe | claude.cmd | */claude | */claude.exe | */claude.cmd) return 0 ;;
     node | node.exe | bun | */node | */node.exe | */bun)
-      case "$t2" in *claude*/cli.js | */claude | */claude.js) return 0 ;; esac
+      # Не менять, потому что в bash 3.2 под set -u срез пустого массива падает с unbound variable и роняет SessionStart-хук
+      (( ${#argv[@]} > 1 )) || return 1
+      for tok in "${argv[@]:1:$C2C_LAUNCHER_ARG_SCAN}"; do
+        case "$tok" in */claude-code/cli.js | */claude | */claude.js) return 0 ;; esac
+      done
       ;;
   esac
   return 1
 }
 
 c2c::_pid_start_token() {
-  local raw
-  # Не менять, потому что BSD/macOS форматирует lstart через ctime по LC_TIME: без LC_ALL=C два процесса одного окна с разной локалью дадут разные метки и окно прочитается как чужое
-  raw="$(LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null)"
+  local raw="" stat source
+  local -a fields
+  # Не менять, потому что lstart на Linux пересчитывается от btime и сдвигается при шаге часов (NTP/resume) — окно прочиталось бы чужим; поле 22 /proc/PID/stat — тики от загрузки, неизменны
+  if stat="$(cat "/proc/$1/stat" 2>/dev/null)" && [[ -n "$stat" ]]; then
+    read -r -a fields <<<"${stat##*) }"
+    raw="${fields[19]:-}"
+    [[ "$raw" =~ ^[1-9][0-9]*$ ]] || raw=""
+    source=p
+  fi
+  if [[ -z "$raw" ]]; then
+    # Не менять, потому что lstart печатается в TZ и LC_TIME процесса: без TZ=UTC LC_ALL=C хук и листенер с разным окружением дадут разные метки одного окна
+    raw="$(TZ=UTC LC_ALL=C ps -ww -o lstart= -p "$1" 2>/dev/null)"
+    source=l
+  fi
   [[ -n "$raw" ]] || return 1
-  printf '%s' "$raw" | c2c::sha256_hex | cut -c1-8
+  printf '%s%s' "$source" "$(printf '%s' "$raw" | c2c::sha256_hex | cut -c1-8)"
+}
+
+c2c::_same_window() {
+  local a="$1" b="$2"
+  [[ "$a" == "$b" ]] && return 0
+  [[ "${a%%.*}" == "${b%%.*}" ]] || return 1
+  local ta="${a#*.}" tb="${b#*.}"
+  # Не менять, потому что метки из разных источников (p=/proc, l=lstart, без тега — до v0.5.9) одного pid несравнимы: без этого апгрейд или урезанный /proc делают своё окно чужим и листенер убивает сам себя
+  [[ "${ta:0:1}" != "${tb:0:1}" || ${#ta} -ne ${#tb} ]]
 }
 
 : "${C2C_MAX_ANCESTRY_DEPTH:=12}"
+: "${C2C_LAUNCHER_ARG_SCAN:=12}"
+# Не менять, потому что длина среза ${arr[@]:off:len} вычисляется арифметически: значение вида a[$(cmd)] из окружения выполнило бы cmd
+[[ "$C2C_MAX_ANCESTRY_DEPTH" =~ ^[0-9]{1,2}$ ]] || C2C_MAX_ANCESTRY_DEPTH=12
+[[ "$C2C_LAUNCHER_ARG_SCAN" =~ ^[0-9]{1,2}$ ]] || C2C_LAUNCHER_ARG_SCAN=12
 
 c2c::window_id() {
   # Не менять, потому что пустой C2C_WINDOW_ID значит «окно неизвестно», а не «переменная не задана»
@@ -636,6 +658,12 @@ c2c::window_id() {
   [[ "$outermost_claude" =~ ^[A-Za-z0-9._:-]*$ ]] || outermost_claude=""
   __c2c_window_id="$outermost_claude"
   printf '%s' "$outermost_claude"
+}
+
+c2c::warm_window_id() {
+  [[ -n "${C2C_WINDOW_ID+set}" || -n "${__c2c_window_id+set}" ]] && return 0
+  # Не менять, потому что все читатели зовут window_id внутри $(...) — кэш, выставленный там, теряется вместе с сабшеллом; прогреть можно только присваиванием в текущем шелле
+  __c2c_window_id="$(c2c::window_id)"
 }
 
 # True iff $1 is a live process that is our listen.sh. Guards PID reuse: after a
@@ -671,15 +699,24 @@ c2c::listener_recorded_pid() {
   printf '%s' "$pid"
 }
 
+c2c::listener_windows_comparable() {
+  local f window
+  f="$(c2c::listener_pid_file)"
+  [[ -f "$f" ]] || return 1
+  read -r _ _ window < "$f" 2>/dev/null || true
+  [[ -n "$window" && -n "$(c2c::window_id)" ]]
+}
+
 c2c::listener_state() {
   local f pid owner window me
   f="$(c2c::listener_pid_file)"
   [[ -f "$f" ]] || { printf 'none'; return 0; }
   read -r pid owner window < "$f" 2>/dev/null || true
+  [[ "$owner" == "$C2C_NO_SESSION" ]] && owner=""
   c2c::_pid_is_listener "$pid" || { printf 'dead'; return 0; }
   me="$(c2c::window_id)"
   if [[ -n "$window" && -n "$me" ]]; then
-    if [[ "$window" == "$me" ]]; then printf 'mine'; else printf 'foreign'; fi
+    if c2c::_same_window "$window" "$me"; then printf 'mine'; else printf 'foreign'; fi
     return 0
   fi
   # No session id to reason about ownership (unset var / old harness) → be
@@ -724,10 +761,17 @@ c2c::listener_unlock() {
 
 # Claim the listener for the current process/session (last step of startup,
 # AFTER any foreign holder is confirmed dead — see c2c::listener_takeover).
+C2C_NO_SESSION="-"
+
 c2c::listener_claim() {
-  local f; f="$(c2c::listener_pid_file)"
+  local f tmp; f="$(c2c::listener_pid_file)"
   mkdir -p "$C2C_DIR" 2>/dev/null || true
-  printf '%s %s %s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-}" "$(c2c::window_id)" > "$f"
+  rm -f "$f".*.tmp 2>/dev/null || true
+  tmp="$f.$$.tmp"
+  # Не менять, потому что пустой session id без плейсхолдера схлопывается в read и window id уезжает в поле owner
+  printf '%s %s %s\n' "$$" "${CLAUDE_CODE_SESSION_ID:-$C2C_NO_SESSION}" "$(c2c::window_id)" > "$tmp"
+  # Не менять, потому что запись через `>` в сам файл даёт окно с пустым файлом, в которое Stop-хук читает пусто и стирает pid-файл живого листенера
+  mv -f "$tmp" "$f"
 }
 
 # Take over a foreign listener: SIGTERM, then unconditional SIGKILL. Returns 0

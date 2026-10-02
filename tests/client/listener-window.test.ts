@@ -176,7 +176,7 @@ describe('c2c::window_id', () => {
     );
     runDetachedAs('claude', entry, home, c2cDir);
     const [self, win] = readFileSync(out, 'utf8').trim().split(/\s+/);
-    expect(win).toMatch(new RegExp(`^${self}\\.[0-9a-f]{8}$`));
+    expect(win).toMatch(new RegExp(`^${self}\\.[pl][0-9a-f]{8}$`));
   });
 
   it('resolves a node-launched install where the path only appears in argv[1]', () => {
@@ -190,15 +190,15 @@ describe('c2c::window_id', () => {
       encoding: 'utf8',
     });
     waitForDone(path.join(cliDir, 'probe.done'));
-    expect(readFileSync(out, 'utf8').trim()).toMatch(/^[0-9]+\.[0-9a-f]{8}$/);
+    expect(readFileSync(out, 'utf8').trim()).toMatch(/^[0-9]+\.[pl][0-9a-f]{8}$/);
   });
 
   it('start-time token of one pid is identical under different LC_TIME locales', () => {
     const { home, c2cDir } = setup();
     const tokens = ['C', 'en_US.UTF-8', 'de_DE.UTF-8'].map((locale) =>
-      sh('c2c::_pid_start_token "$$"', { HOME: home, C2C_DIR: c2cDir, LC_ALL: locale }),
+      sh(`c2c::_pid_start_token ${process.pid}`, { HOME: home, C2C_DIR: c2cDir, LC_ALL: locale }),
     );
-    expect(tokens[0]).toMatch(/^[0-9a-f]{8}$/);
+    expect(tokens[0]).toMatch(/^[pl][0-9a-f]{8}$/);
     expect(new Set(tokens).size).toBe(1);
   });
 
@@ -239,7 +239,7 @@ describe('c2c::window_id', () => {
     const inner = probe(c2cDir, 'deep.sh', out, '');
     const outer = script(c2cDir, 'claude-deep.sh', `sleep 0.3\nbash "${inner}"`);
     runDetachedAs('claude', outer, home, c2cDir);
-    expect(readFileSync(out, 'utf8').trim()).toMatch(/^[0-9]+\.[0-9a-f]{8}$/);
+    expect(readFileSync(out, 'utf8').trim()).toMatch(/^[0-9]+\.[pl][0-9a-f]{8}$/);
   });
 
   it('returns empty when no claude ancestor exists so callers fall back to the session id', () => {
@@ -426,4 +426,222 @@ describe('peer-listen.md is in sync with the SessionStart Monitor contract', () 
     expect(md).toMatch(/silently/i);
     expect(md).toMatch(/do NOT re-arm silently/i);
   });
+});
+
+describe('review fixes: pid-file format, window cache, launcher detection', () => {
+  function registered() {
+    const s = setup();
+    writeFileSync(
+      path.join(s.c2cDir, 'identity.json'),
+      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
+    );
+    writeFileSync(path.join(s.c2cDir, 'name.txt'), 'probe\n');
+    return s;
+  }
+
+  function sessionStartWithLiveListener(
+    s: { c2cDir: string; home: string; pidFile: string },
+    fields: string,
+    source: string,
+    env: Record<string, string>,
+  ): string {
+    const listener = fakeListener(s.c2cDir);
+    return execFileSync(
+      'bash',
+      [
+        '-c',
+        `bash "${listener}" >/dev/null 2>&1 &
+         pid=$!
+         printf '%s ${fields}\\n' "$pid" > "${s.pidFile}"
+         printf '{"source":"${source}"}' | "${SESSION_START}"
+         kill -9 "$pid" 2>/dev/null || true`,
+      ],
+      {
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: s.home,
+          C2C_DIR: s.c2cDir,
+          C2C_URL: 'http://127.0.0.1:9',
+          ...env,
+        },
+        encoding: 'utf8',
+      },
+    );
+  }
+
+  it('empty session id is written as a placeholder so the window id stays in its own field', () => {
+    const { home, c2cDir, pidFile } = setup();
+    sh('c2c::listener_claim', { HOME: home, C2C_DIR: c2cDir, C2C_WINDOW_ID: '4242' });
+    const [pid, owner, win] = readFileSync(pidFile, 'utf8').trim().split(/\s+/);
+    expect(pid).toMatch(/^[0-9]+$/);
+    expect(owner).toBe('-');
+    expect(win).toBe('4242');
+  });
+
+  it('placeholder-owned listener in another window reads foreign, in the same window mine', () => {
+    const { home, c2cDir, pidFile } = setup();
+    const base = { HOME: home, C2C_DIR: c2cDir, CLAUDE_CODE_SESSION_ID: 's1' };
+    expect(stateWithPidFile(c2cDir, pidFile, '- 4242', { ...base, C2C_WINDOW_ID: '4242' })).toBe(
+      'mine',
+    );
+    expect(stateWithPidFile(c2cDir, pidFile, '- 4242', { ...base, C2C_WINDOW_ID: '9999' })).toBe(
+      'foreign',
+    );
+  });
+
+  it('claim leaves no temp file behind', () => {
+    const { home, c2cDir } = setup();
+    sh('c2c::listener_claim', { HOME: home, C2C_DIR: c2cDir, C2C_WINDOW_ID: '4242' });
+    const leftovers = require('node:fs')
+      .readdirSync(c2cDir)
+      .filter((n: string) => n.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('/clear with a listener owned by another known window arms a Monitor instead of staying silent', () => {
+    const s = registered();
+    const out = sessionStartWithLiveListener(s, 's-old 9999', 'clear', {
+      CLAUDE_CODE_SESSION_ID: 's-new',
+      C2C_WINDOW_ID: '4242',
+    });
+    expect(out).toMatch(/Monitor tool right now/);
+  });
+
+  it('already-running branch repeats the exact Monitor arguments and the untrusted-frame rule', () => {
+    const s = registered();
+    const out = sessionStartWithLiveListener(s, 's1 4242', 'compact', {
+      CLAUDE_CODE_SESSION_ID: 's2',
+      C2C_WINDOW_ID: '4242',
+    });
+    expect(out).not.toMatch(/Monitor tool right now/);
+    expect(out).toMatch(/command: .*\/scripts\/listen\.sh/);
+    expect(out).toMatch(/timeout_ms: 1800000/);
+    expect(out).toMatch(/UNTRUSTED_PEER_MESSAGE/);
+  });
+
+  it('warm_window_id survives command substitution, so callers stop re-walking ancestry', () => {
+    const { home, c2cDir } = setup();
+    const out = sh(
+      `
+      c2c::warm_window_id
+      warmed="$__c2c_window_id"
+      c2c::_pid_is_claude() { [[ "$1" == "$$" ]]; }
+      cached="$(c2c::window_id)"
+      unset __c2c_window_id
+      fresh="$(c2c::window_id)"
+      [[ "$cached" == "$warmed" ]] && echo CACHED_OK
+      [[ "$fresh" == "$$".* ]] && echo FRESH_WALKS
+      `,
+      { HOME: home, C2C_DIR: c2cDir },
+    );
+    expect(out).toBe('CACHED_OK\nFRESH_WALKS');
+  });
+
+  it('node launcher with flags before cli.js is recognized as a claude window', () => {
+    const { home, c2cDir } = setup();
+    const holder = path.join(c2cDir, 'hold.sh');
+    writeFileSync(holder, '#!/usr/bin/env bash\nsleep 30\n');
+    const out = sh(
+      `
+      (exec -a node bash "${holder}" --max-old-space-size=3584 /opt/x/claude-code/cli.js) >/dev/null 2>&1 &
+      pid=$!
+      sleep 0.3
+      c2c::_pid_is_claude "$pid" && echo CLAUDE || echo NOT
+      kill -9 "$pid" 2>/dev/null || true
+      `,
+      { HOME: home, C2C_DIR: c2cDir },
+    );
+    expect(out).toBe('CLAUDE');
+  });
+
+  it('node running a cli.js that merely has claude in its path is not a claude window', () => {
+    const { home, c2cDir } = setup();
+    const out = sh(
+      `
+      (exec -a node bash -c 'sleep 30; true' /home/u/claude-tools/cli.js) >/dev/null 2>&1 &
+      pid=$!
+      sleep 0.3
+      c2c::_pid_is_claude "$pid" && echo CLAUDE || echo NOT
+      kill -9 "$pid" 2>/dev/null || true
+      `,
+      { HOME: home, C2C_DIR: c2cDir },
+    );
+    expect(out).toBe('NOT');
+  });
+
+  it('bare node without arguments is not a window and does not crash under set -u', () => {
+    const { home, c2cDir } = setup();
+    const out = sh('ps() { echo node; }; c2c::_pid_is_claude $$ && echo CLAUDE || echo NOT', {
+      HOME: home,
+      C2C_DIR: c2cDir,
+    });
+    expect(out).toBe('NOT');
+  });
+
+  it('claim sweeps temp files orphaned by a killed earlier claim', () => {
+    const { home, c2cDir, pidFile } = setup();
+    writeFileSync(`${pidFile}.99999.tmp`, 'stale');
+    sh('c2c::listener_claim', { HOME: home, C2C_DIR: c2cDir, C2C_WINDOW_ID: '4242' });
+    const leftovers = require('node:fs')
+      .readdirSync(c2cDir)
+      .filter((n: string) => n.endsWith('.tmp'));
+    expect(leftovers).toEqual([]);
+  });
+
+  it('hostile C2C_LAUNCHER_ARG_SCAN from the environment is not evaluated as code', () => {
+    const { home, c2cDir } = setup();
+    const marker = path.join(c2cDir, 'pwned');
+    sh('ps() { echo "node /x/claude-code/cli.js"; }; c2c::_pid_is_claude $$ >/dev/null || true', {
+      HOME: home,
+      C2C_DIR: c2cDir,
+      C2C_LAUNCHER_ARG_SCAN: `a[$(touch ${marker})]`,
+      C2C_MAX_ANCESTRY_DEPTH: `a[$(touch ${marker})]`,
+    });
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it('same window pid with a pre-upgrade untagged start token is still mine (no self-takeover on upgrade)', () => {
+    const { home, c2cDir, pidFile } = setup();
+    const out = stateWithPidFile(c2cDir, pidFile, 's1 4242.a1b2c3d4', {
+      HOME: home,
+      C2C_DIR: c2cDir,
+      CLAUDE_CODE_SESSION_ID: 's2',
+      C2C_WINDOW_ID: '4242.p9f8e7d6c',
+    });
+    expect(out).toBe('mine');
+  });
+
+  it('same window pid seen via /proc by one process and via lstart by another is mine', () => {
+    const { home, c2cDir, pidFile } = setup();
+    const out = stateWithPidFile(c2cDir, pidFile, 's1 4242.l11111111', {
+      HOME: home,
+      C2C_DIR: c2cDir,
+      CLAUDE_CODE_SESSION_ID: 's1',
+      C2C_WINDOW_ID: '4242.p22222222',
+    });
+    expect(out).toBe('mine');
+  });
+
+  it('reused window pid with a different start token of the same kind is foreign', () => {
+    const { home, c2cDir, pidFile } = setup();
+    const out = stateWithPidFile(c2cDir, pidFile, 's1 4242.p11111111', {
+      HOME: home,
+      C2C_DIR: c2cDir,
+      CLAUDE_CODE_SESSION_ID: 's1',
+      C2C_WINDOW_ID: '4242.p22222222',
+    });
+    expect(out).toBe('foreign');
+  });
+
+  it.skipIf(!existsSync('/proc/self/stat'))(
+    'start token does not depend on the displayed clock (TZ change keeps the same window id)',
+    () => {
+      const { home, c2cDir } = setup();
+      const tokens = ['UTC', 'Asia/Tokyo', 'America/Los_Angeles'].map((tz) =>
+        sh(`c2c::_pid_start_token ${process.pid}`, { HOME: home, C2C_DIR: c2cDir, TZ: tz }),
+      );
+      expect(tokens[0]).toMatch(/^[pl][0-9a-f]{8}$/);
+      expect(new Set(tokens).size).toBe(1);
+    },
+  );
 });

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Persistent peer-mail listener. Wrapped by Claude Code's Monitor tool
-# (persistent=true): each stdout line / block becomes a chat event.
-#
 # Delivery model: the listener fetches FULL bodies from /v1/inbox (no peek),
 # prints them inside a security frame, then acks. Claude reads the body as
 # untrusted external input — no user round-trip required to surface content.
@@ -38,6 +35,7 @@ c2c::ensure_identity
 # c2c::listener_state distinguishes OUR live listener (carried across /clear —
 # keep it) from a foreign/orphaned one (this session was armed, so it wins).
 mkdir -p "$C2C_DIR"
+c2c::warm_window_id
 C2C_LISTENER_PID_FILE="$(c2c::listener_pid_file)"
 # Serialize state→takeover→claim so two sessions arming at once can't both slip
 # through and leave two live listeners on one inbox. Best-effort: unlock only if
@@ -64,7 +62,7 @@ case "$(c2c::listener_state)" in
     ;;
   # none|dead → nothing live to take over; fall through and claim.
 esac
-c2c::listener_claim
+c2c::listener_claim || echo "⚠️  peer-listener: could not record listener.pid in $C2C_DIR — duplicate-listener protection is off for this run"
 (( lock_held )) && c2c::listener_unlock
 # Cooperative stop: on INT/TERM remove our pid file AND exit, so when the loop is
 # between polls (or in the sleep after a failure) it halts at once instead of
