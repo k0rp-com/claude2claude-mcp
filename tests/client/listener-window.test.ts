@@ -5,7 +5,6 @@ import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 const COMMON = path.resolve(__dirname, '../../client-plugin/scripts/common.sh');
-const SESSION_START = require.resolve('../../client-plugin/scripts/session-start.sh');
 const cleanup: string[] = [];
 
 function mkTmp(prefix = 'c2c-'): string {
@@ -283,6 +282,8 @@ describe('Stop hook and a live listener', () => {
           C2C_DIR: c2cDir,
           C2C_URL: 'http://127.0.0.1:9',
           C2C_WINDOW_ID: '4242',
+          // The Stop hook only looks at the listener in -p sessions.
+          C2C_PRINT_MODE: '1',
         },
         encoding: 'utf8',
       },
@@ -300,175 +301,7 @@ describe('Stop hook and a live listener', () => {
   });
 });
 
-describe('SessionStart arming decision', () => {
-  function registered() {
-    const s = setup();
-    writeFileSync(
-      path.join(s.c2cDir, 'identity.json'),
-      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
-    );
-    writeFileSync(path.join(s.c2cDir, 'name.txt'), 'probe\n');
-    return s;
-  }
-
-  function hook(
-    s: { home: string; c2cDir: string; pidFile: string },
-    source: string,
-    env: Record<string, string>,
-  ): string {
-    const listener = fakeListener(s.c2cDir);
-    return execFileSync(
-      'bash',
-      [
-        '-c',
-        `bash "${listener}" >/dev/null 2>&1 &
-         pid=$!
-         printf '%s %s\\n' "$pid" "$LISTENER_FIELDS" > "${s.pidFile}"
-         printf '{"source":"%s"}' "${source}" | "${SESSION_START}"
-         kill -9 "$pid" 2>/dev/null || true`,
-      ],
-      {
-        env: {
-          PATH: process.env.PATH ?? '',
-          HOME: s.home,
-          C2C_DIR: s.c2cDir,
-          C2C_URL: 'http://127.0.0.1:9',
-          ...env,
-        },
-        encoding: 'utf8',
-      },
-    );
-  }
-
-  for (const source of ['compact', 'resume', 'clear', 'startup']) {
-    it(`${source} with a rotated session id in the same window does not arm a second Monitor`, () => {
-      const s = registered();
-      const out = hook(s, source, {
-        LISTENER_FIELDS: 's1 4242',
-        CLAUDE_CODE_SESSION_ID: 's2-rotated',
-        C2C_WINDOW_ID: '4242',
-      });
-      expect(out).not.toMatch(/Monitor tool right now/);
-      expect(out).toMatch(/уже запущен/);
-      expect(out).toMatch(/STANDING RULE/);
-    });
-  }
-
-  it('a listener owned by another window is still armed over', () => {
-    const s = registered();
-    const out = hook(s, 'startup', {
-      LISTENER_FIELDS: 's1 4242',
-      CLAUDE_CODE_SESSION_ID: 's1',
-      C2C_WINDOW_ID: '9999',
-    });
-    expect(out).toMatch(/Monitor tool right now/);
-  });
-});
-
-describe('SessionStart Monitor-arm instructions', () => {
-  function freshArmOutput(): string {
-    const s = setup();
-    writeFileSync(
-      path.join(s.c2cDir, 'identity.json'),
-      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
-    );
-    writeFileSync(path.join(s.c2cDir, 'name.txt'), 'probe\n');
-    return execFileSync('bash', ['-c', `printf '{"source":"startup"}' | "${SESSION_START}"`], {
-      env: {
-        PATH: process.env.PATH ?? '',
-        HOME: s.home,
-        C2C_DIR: s.c2cDir,
-        C2C_URL: 'http://127.0.0.1:9',
-        CLAUDE_CODE_SESSION_ID: 's1',
-        C2C_WINDOW_ID: '4242',
-      },
-      encoding: 'utf8',
-    });
-  }
-
-  it('passes an explicit 30-minute timeout_ms, not the non-existent persistent flag', () => {
-    const out = freshArmOutput();
-    expect(out).toMatch(/timeout_ms:\s*1800000/);
-    expect(out).not.toMatch(/persistent:\s*true/);
-  });
-
-  it('carries a standing rule to re-arm silently on expiry, with an exception for real peer content', () => {
-    const out = freshArmOutput();
-    expect(out).toMatch(/re-invoke Monitor/i);
-    expect(out).toMatch(/SILENTLY/);
-    expect(out).toMatch(/carries mail or a pair request/i);
-  });
-
-  it('does not tell Claude to re-arm silently for a non-timeout stream end', () => {
-    const out = freshArmOutput();
-    expect(out).toMatch(/do NOT re-arm silently/i);
-    expect(out).toMatch(/already running/i);
-  });
-
-  it('caps the silent-re-arm loop if the listener dies again right away', () => {
-    const out = freshArmOutput();
-    expect(out).toMatch(/ends again within about a minute/i);
-    expect(out).toMatch(/stop re-arming/i);
-  });
-});
-
-describe('peer-listen.md is in sync with the SessionStart Monitor contract', () => {
-  const PEER_LISTEN_MD = path.resolve(__dirname, '../../client-plugin/commands/peer-listen.md');
-
-  it('passes timeout_ms instead of the non-existent persistent flag', () => {
-    const md = readFileSync(PEER_LISTEN_MD, 'utf8');
-    expect(md).toMatch(/timeout_ms.*1800000/);
-    expect(md).not.toMatch(/persistent.*true/);
-  });
-
-  it('carries the same silent-re-arm standing rule as SessionStart', () => {
-    const md = readFileSync(PEER_LISTEN_MD, 'utf8');
-    expect(md).toMatch(/silently/i);
-    expect(md).toMatch(/do NOT re-arm silently/i);
-  });
-});
-
 describe('review fixes: pid-file format, window cache, launcher detection', () => {
-  function registered() {
-    const s = setup();
-    writeFileSync(
-      path.join(s.c2cDir, 'identity.json'),
-      JSON.stringify({ id: 'testmachine', created_at: '2026-01-01T00:00:00Z' }),
-    );
-    writeFileSync(path.join(s.c2cDir, 'name.txt'), 'probe\n');
-    return s;
-  }
-
-  function sessionStartWithLiveListener(
-    s: { c2cDir: string; home: string; pidFile: string },
-    fields: string,
-    source: string,
-    env: Record<string, string>,
-  ): string {
-    const listener = fakeListener(s.c2cDir);
-    return execFileSync(
-      'bash',
-      [
-        '-c',
-        `bash "${listener}" >/dev/null 2>&1 &
-         pid=$!
-         printf '%s ${fields}\\n' "$pid" > "${s.pidFile}"
-         printf '{"source":"${source}"}' | "${SESSION_START}"
-         kill -9 "$pid" 2>/dev/null || true`,
-      ],
-      {
-        env: {
-          PATH: process.env.PATH ?? '',
-          HOME: s.home,
-          C2C_DIR: s.c2cDir,
-          C2C_URL: 'http://127.0.0.1:9',
-          ...env,
-        },
-        encoding: 'utf8',
-      },
-    );
-  }
-
   it('empty session id is written as a placeholder so the window id stays in its own field', () => {
     const { home, c2cDir, pidFile } = setup();
     sh('c2c::listener_claim', { HOME: home, C2C_DIR: c2cDir, C2C_WINDOW_ID: '4242' });
@@ -496,27 +329,6 @@ describe('review fixes: pid-file format, window cache, launcher detection', () =
       .readdirSync(c2cDir)
       .filter((n: string) => n.endsWith('.tmp'));
     expect(leftovers).toEqual([]);
-  });
-
-  it('/clear with a listener owned by another known window arms a Monitor instead of staying silent', () => {
-    const s = registered();
-    const out = sessionStartWithLiveListener(s, 's-old 9999', 'clear', {
-      CLAUDE_CODE_SESSION_ID: 's-new',
-      C2C_WINDOW_ID: '4242',
-    });
-    expect(out).toMatch(/Monitor tool right now/);
-  });
-
-  it('already-running branch repeats the exact Monitor arguments and the untrusted-frame rule', () => {
-    const s = registered();
-    const out = sessionStartWithLiveListener(s, 's1 4242', 'compact', {
-      CLAUDE_CODE_SESSION_ID: 's2',
-      C2C_WINDOW_ID: '4242',
-    });
-    expect(out).not.toMatch(/Monitor tool right now/);
-    expect(out).toMatch(/command: .*\/scripts\/listen\.sh/);
-    expect(out).toMatch(/timeout_ms: 1800000/);
-    expect(out).toMatch(/UNTRUSTED_PEER_MESSAGE/);
   });
 
   it('warm_window_id survives command substitution, so callers stop re-walking ancestry', () => {

@@ -666,6 +666,47 @@ c2c::warm_window_id() {
   __c2c_window_id="$(c2c::window_id)"
 }
 
+# True iff a claude command line ($1) is a -p/--print session WITHOUT streaming
+# input. In exactly that mode Claude Code runs an asyncRewake hook synchronously
+# instead of in the background, so the long-polling listener would hang the
+# session until its hook timeout. SDK sessions pass `--input-format stream-json`
+# and get real background hooks, so they count as live.
+c2c::_claude_argv_is_print() {
+  local tok prev="" print=0 stream=0
+  local -a argv
+  read -r -a argv <<<"$1"
+  (( ${#argv[@]} > 0 )) || return 1
+  for tok in "${argv[@]}"; do
+    case "$tok" in
+      -p | --print) print=1 ;;
+      --input-format=stream-json) stream=1 ;;
+      stream-json) [[ "$prev" == --input-format ]] && stream=1 ;;
+    esac
+    prev="$tok"
+  done
+  (( print == 1 && stream == 0 ))
+}
+
+# True iff the NEAREST claude ancestor (the one running this hook) is a print
+# session per c2c::_claude_argv_is_print. Nearest, not outermost: an SDK child
+# runs its own hooks. C2C_PRINT_MODE=1/0 overrides (tests, odd launchers). No
+# claude ancestor visible → assume live: a manual run is not a hook at all.
+c2c::session_is_print_mode() {
+  case "${C2C_PRINT_MODE:-}" in 1) return 0 ;; 0) return 1 ;; esac
+  command -v ps >/dev/null 2>&1 || return 1
+  local pid="$$" i
+  for i in $(seq 1 "$C2C_MAX_ANCESTRY_DEPTH"); do
+    if c2c::_pid_is_claude "$pid"; then
+      c2c::_claude_argv_is_print "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+      return
+    fi
+    pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+    [[ "$pid" =~ ^[0-9]+$ ]] || break
+    (( pid <= 1 )) && break
+  done
+  return 1
+}
+
 # True iff $1 is a live process that is our listen.sh. Guards PID reuse: after a
 # crash that skipped the EXIT trap (SIGKILL, OOM) the recorded PID may have been
 # recycled to an unrelated process, and we must never signal that innocent.
@@ -699,14 +740,6 @@ c2c::listener_recorded_pid() {
   printf '%s' "$pid"
 }
 
-c2c::listener_windows_comparable() {
-  local f window
-  f="$(c2c::listener_pid_file)"
-  [[ -f "$f" ]] || return 1
-  read -r _ _ window < "$f" 2>/dev/null || true
-  [[ -n "$window" && -n "$(c2c::window_id)" ]]
-}
-
 c2c::listener_state() {
   local f pid owner window me
   f="$(c2c::listener_pid_file)"
@@ -724,7 +757,7 @@ c2c::listener_state() {
   # never kill a listener we cannot prove is foreign. NOTE: a pre-upgrade pid file
   # with no SESSION_ID field (empty owner) reads as `foreign` when the current
   # session id is non-empty — a one-time, harmless self-takeover of our own
-  # listener right after upgrading the plugin without restarting the Monitor.
+  # listener right after upgrading the plugin.
   if [[ -z "${CLAUDE_CODE_SESSION_ID:-}" || "$owner" == "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
     printf 'mine'
   else

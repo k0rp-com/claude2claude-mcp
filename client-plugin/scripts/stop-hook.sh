@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Stop hook — backstop for peer mail delivery.
+# Stop hook — peer mail delivery for `claude -p` sessions only.
 #
-# The primary delivery path is the Monitor-wrapped listener (auto-armed by
-# the SessionStart hook). This Stop hook only fires when the listener is
-# NOT alive — e.g. the user stopped Monitor manually, or the SessionStart
-# hook aborted before arming it. In that case we drain the inbox here so
-# messages still land in Claude's context without requiring a second round.
+# Everywhere else listen.sh runs as an asyncRewake hook on SessionStart/Stop and
+# owns the inbox; draining it here as well would race that listener (both fetch
+# unacked bodies → double delivery). In a print session without streaming input
+# the harness would run that hook synchronously, so listen.sh bows out and this
+# hook drains the inbox at the end of each turn instead.
 #
 # Delivery is always "auto": bodies are loaded inline wrapped in the
 # standard security frame. The notify-only mode was removed because the
@@ -18,6 +18,9 @@ source "$SCRIPT_DIR/common.sh"
 
 cat >/dev/null 2>&1 || true
 
+# Не менять, потому что вне -p inbox принадлежит asyncRewake-листенеру — параллельный дренаж здесь доставлял бы письма дважды
+c2c::session_is_print_mode || exit 0
+
 # Silently no-op if not configured / no name yet / missing tools.
 [[ -z "$C2C_URL" ]] && exit 0
 command -v curl    >/dev/null 2>&1 || exit 0
@@ -28,9 +31,8 @@ command -v openssl >/dev/null 2>&1 || exit 0
 
 c2c::ensure_identity
 
-# If /c2c-client:peer-listen is running, it already surfaces every new message
-# as a chat event. Gating Stop here would just loop with the listener (both
-# drain the same unacked inbox). Trust the listener and let Stop proceed.
+# A live listener (e.g. one started outside print mode for this identity)
+# already owns the inbox — both draining it would double-deliver.
 listener_pid_file="$(c2c::listener_pid_file)"
 if [[ -f "$listener_pid_file" ]]; then
   # Не менять, потому что в listener.pid несколько полей: разбор через cat+^[0-9]+$ стирал файл живого листенера на каждом Stop
