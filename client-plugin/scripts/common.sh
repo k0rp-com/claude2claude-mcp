@@ -666,28 +666,30 @@ c2c::warm_window_id() {
   __c2c_window_id="$(c2c::window_id)"
 }
 
-# True iff a claude command line ($1) is a -p/--print session WITHOUT streaming
-# input. In exactly that mode Claude Code runs an asyncRewake hook synchronously
-# instead of in the background, so the long-polling listener would hang the
-# session until its hook timeout. SDK sessions pass `--input-format stream-json`
-# and get real background hooks, so they count as live.
+# True iff a claude command line ($1) is a headless session: -p/--print, or any
+# `--output-format stream-json` (SDK / chat front-ends, with or without -p and
+# --input-format). There Claude Code does not run an asyncRewake hook in the
+# background in any useful way: in `-p` it runs synchronously, and in a
+# stream-json session (CLI 2.1.289) the SessionStart long-poll blocks
+# system/init, so the session never answers until the hook timeout. Nor is
+# there an interactive user to show a rewake letter to. Headless sessions get
+# their mail from stop-hook.sh instead.
 c2c::_claude_argv_is_print() {
-  local tok prev="" print=0 stream=0
+  local tok prev=""
   local -a argv
   read -r -a argv <<<"$1"
   (( ${#argv[@]} > 0 )) || return 1
   for tok in "${argv[@]}"; do
     case "$tok" in
-      -p | --print) print=1 ;;
-      --input-format=stream-json) stream=1 ;;
-      stream-json) [[ "$prev" == --input-format ]] && stream=1 ;;
+      -p | --print | --output-format=stream-json) return 0 ;;
+      stream-json) [[ "$prev" == --output-format ]] && return 0 ;;
     esac
     prev="$tok"
   done
-  (( print == 1 && stream == 0 ))
+  return 1
 }
 
-# True iff the NEAREST claude ancestor (the one running this hook) is a print
+# True iff the NEAREST claude ancestor (the one running this hook) is a headless
 # session per c2c::_claude_argv_is_print. Nearest, not outermost: an SDK child
 # runs its own hooks. C2C_PRINT_MODE=1/0 overrides (tests, odd launchers). No
 # claude ancestor visible → assume live: a manual run is not a hook at all.

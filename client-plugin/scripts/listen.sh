@@ -32,7 +32,7 @@ exec 2>/dev/null
 # The harness writes the hook payload to stdin; we don't need it.
 [[ -t 0 ]] || cat >/dev/null
 
-# Не менять, потому что в `claude -p` без stream-json asyncRewake-хук исполняется синхронно — бесконечный long-poll повесил бы сессию до таймаута хука
+# Не менять, потому что в безголовой сессии (`-p` или `--output-format stream-json`) long-poll блокирует её: в `-p` asyncRewake-хук синхронный, в stream-json SessionStart-хук не даёт наступить system/init — сессия висит до таймаута хука; почту там дренирует stop-hook.sh
 c2c::session_is_print_mode && exit 0
 
 c2c::ensure_tools

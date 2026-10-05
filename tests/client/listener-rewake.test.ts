@@ -227,14 +227,28 @@ describe('print-mode detection from the claude command line', () => {
 
   it('interactive claude is live', () => {
     expect(isPrint('claude --dangerously-skip-permissions')).toBe('LIVE');
+    expect(isPrint('claude --model opus --dangerously-skip-permissions')).toBe('LIVE');
+    expect(isPrint('claude --resume 0b7c3f1e-2a4d-4e5f-9a8b-1c2d3e4f5a6b')).toBe('LIVE');
   });
-  it('claude -p / --print is print mode', () => {
+  it('claude -p / --print is headless', () => {
     expect(isPrint('claude -p hello')).toBe('PRINT');
     expect(isPrint('/usr/bin/node /x/claude-code/cli.js --print hi')).toBe('PRINT');
   });
-  it('SDK sessions with streaming input run async hooks, so they are live', () => {
-    expect(isPrint('claude -p --input-format stream-json --output-format stream-json')).toBe('LIVE');
-    expect(isPrint('claude --print --input-format=stream-json')).toBe('LIVE');
+  // CLI 2.1.289: a stream-json session never reaches system/init while the
+  // listener's SessionStart long-poll is running, and there is no interactive
+  // user to show a rewake letter to anyway.
+  it('any --output-format stream-json session is headless, with or without -p', () => {
+    expect(
+      isPrint(
+        'claude --output-format stream-json --input-format stream-json --verbose --dangerously-skip-permissions --disallowedTools EnterPlanMode ExitPlanMode AskUserQuestion --model claude-opus-5-5[1m] --effort medium',
+      ),
+    ).toBe('PRINT');
+    expect(isPrint('claude --output-format=stream-json --input-format=stream-json')).toBe('PRINT');
+    expect(isPrint('claude -p --input-format stream-json --output-format stream-json')).toBe('PRINT');
+    expect(isPrint('claude --print --input-format=stream-json')).toBe('PRINT');
+  });
+  it('a non-stream --output-format does not make an interactive session headless', () => {
+    expect(isPrint('claude --output-format text')).toBe('LIVE');
   });
 });
 

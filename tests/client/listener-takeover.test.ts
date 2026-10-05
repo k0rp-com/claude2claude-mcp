@@ -326,6 +326,8 @@ describe('c2c-client listen.sh takeover (integration)', () => {
           HOME: home,
           C2C_DIR: c2cDir,
           C2C_URL: 'http://127.0.0.1:1',
+          // Pin live mode: the real ancestor may be a headless claude (stream-json chat).
+          C2C_PRINT_MODE: '0',
           CLAUDE_CODE_SESSION_ID: 'sess-NEW',
         },
         encoding: 'utf8',
@@ -365,6 +367,8 @@ describe('c2c-client listen.sh takeover (integration)', () => {
           HOME: home,
           C2C_DIR: c2cDir,
           C2C_URL: 'http://127.0.0.1:1',
+          // Pin live mode: the real ancestor may be a headless claude (stream-json chat).
+          C2C_PRINT_MODE: '0',
           CLAUDE_CODE_SESSION_ID: 'sess-SAME',
         },
         encoding: 'utf8',
