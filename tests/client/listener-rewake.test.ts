@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -215,6 +215,47 @@ describe('rewake listener: silence', () => {
     expect(r.stdout + r.stderr).toBe('');
     expect(existsSync(s.pidFile)).toBe(false);
   });
+});
+
+describe('rewake listener: owner session', () => {
+  it('exits 0 without touching the inbox once its claude session is gone (orphan after SIGKILL)', async () => {
+    const s = registered();
+    const m = await fakeMediator([{ messages: [MSG], pair_requests: [] }]);
+    const owner = spawn('sleep', ['30']);
+    const ownerPid = String(owner.pid);
+    owner.kill('SIGKILL');
+    await new Promise((r) => owner.on('exit', r));
+    try {
+      const r = await run(
+        LISTEN,
+        { HOME: s.home, C2C_DIR: s.c2cDir, C2C_URL: m.url, C2C_PRINT_MODE: '0', C2C_WINDOW_ID: '4242', C2C_OWNER_PID: ownerPid },
+        5000,
+      );
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe('');
+      expect(m.acks).toEqual([]);
+    } finally {
+      await m.close();
+    }
+  });
+
+  it('delivers while its claude session is alive', async () => {
+    const s = registered();
+    const m = await fakeMediator([{ messages: [MSG], pair_requests: [] }]);
+    const owner = spawn('sleep', ['30']);
+    try {
+      const r = await run(
+        LISTEN,
+        { HOME: s.home, C2C_DIR: s.c2cDir, C2C_URL: m.url, C2C_PRINT_MODE: '0', C2C_WINDOW_ID: '4242', C2C_OWNER_PID: String(owner.pid) },
+        10000,
+      );
+      expect(r.code).toBe(2);
+      expect(m.acks).toEqual([{ ids: ['msg-1'] }]);
+    } finally {
+      owner.kill('SIGKILL');
+      await m.close();
+    }
+  }, 15000);
 });
 
 describe('session-mode detection from the claude command line', () => {

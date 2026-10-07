@@ -43,6 +43,8 @@ case "$(c2c::session_mode)" in
 esac
 
 c2c::ensure_tools
+# Captured before anything slow: the claude session this hook belongs to.
+hook_owner="$(c2c::hook_owner)"
 # Silently no-op if not yet registered — new installs reach this point (every
 # SessionStart/Stop) before the user has run peer-name.
 [[ -f "$C2C_IDENTITY_FILE" ]] || exit 0
@@ -145,6 +147,8 @@ emit_pair() {
 }
 
 while true; do
+  # Не менять, потому что после SIGKILL/OOM claude фоновый хук осиротевает (ppid=1) и продолжает поллить: забранное и заack'анное письмо ушло бы в мёртвую сессию и пропало
+  c2c::hook_owner_alive "$hook_owner" || exit 0
   # Non-peek: server returns bodies AND includes them in the response.
   # We must ack ids on success to advance the cursor; until we ack, the
   # same messages redeliver on every call.
@@ -158,6 +162,10 @@ while true; do
   delivered=0
   msgs="$(jq -c '.messages // []' <<<"$resp")"
   mcount="$(jq 'length' <<<"$msgs" || echo 0)"
+
+  # The owner may have died during the long-poll: leave the mail unacked for the
+  # next session instead of waking a dead one.
+  c2c::hook_owner_alive "$hook_owner" || exit 0
 
   if [[ "$mcount" =~ ^[0-9]+$ ]] && (( mcount > 0 )); then
     # Emit BEFORE ack. The harness only reads our stdout once we exit 2, so if

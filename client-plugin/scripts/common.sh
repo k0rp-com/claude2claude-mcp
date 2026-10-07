@@ -710,18 +710,47 @@ c2c::_claude_argv_mode() {
 c2c::session_mode() {
   case "${C2C_SESSION_MODE:-}" in print|stream|live) printf '%s' "$C2C_SESSION_MODE"; return 0 ;; esac
   case "${C2C_PRINT_MODE:-}" in 1) printf 'print'; return 0 ;; 0) printf 'live'; return 0 ;; esac
-  command -v ps >/dev/null 2>&1 || { printf 'live'; return 0; }
+  local pid; pid="$(c2c::nearest_claude_pid)"
+  [[ -n "$pid" ]] || { printf 'live'; return 0; }
+  c2c::_claude_argv_mode "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+}
+
+# Echo the pid of the NEAREST claude ancestor (the session running this hook), or
+# nothing when there is none (manual run).
+c2c::nearest_claude_pid() {
+  command -v ps >/dev/null 2>&1 || return 0
   local pid="$$" i
   for i in $(seq 1 "$C2C_MAX_ANCESTRY_DEPTH"); do
     if c2c::_pid_is_claude "$pid"; then
-      c2c::_claude_argv_mode "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+      printf '%s' "$pid"
       return 0
     fi
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
     [[ "$pid" =~ ^[0-9]+$ ]] || break
     (( pid <= 1 )) && break
   done
-  printf 'live'
+}
+
+# Echo "PID.TOKEN" of the session that owns this hook: C2C_OWNER_PID (tests) or
+# the nearest claude ancestor. Empty when unknown — then there is nothing to watch.
+# TOKEN is "-" when the pid is already gone, which c2c::hook_owner_alive rejects.
+c2c::hook_owner() {
+  local pid="${C2C_OWNER_PID:-}" token
+  [[ -n "$pid" ]] || pid="$(c2c::nearest_claude_pid)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  # Не менять, потому что известный, но уже мёртвый владелец — это сирота, а не «владелец неизвестен»: пустая строка отключила бы проверку
+  token="$(c2c::_pid_start_token "$pid")" || token="-"
+  printf '%s.%s' "$pid" "$token"
+}
+
+# True iff the owner recorded by c2c::hook_owner ($1) is still the same live
+# process. Empty owner → true (unknown, don't guess).
+c2c::hook_owner_alive() {
+  [[ -n "$1" ]] || return 0
+  local pid="${1%%.*}" token="${1#*.}" now
+  kill -0 "$pid" 2>/dev/null || return 1
+  now="$(c2c::_pid_start_token "$pid")" || return 1
+  [[ "$now" == "$token" ]]
 }
 
 c2c::session_is_print_mode() {
