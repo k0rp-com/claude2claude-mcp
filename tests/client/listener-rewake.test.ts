@@ -84,6 +84,7 @@ function run(
   script: string,
   env: Record<string, string>,
   deadlineMs: number,
+  payload = '{}',
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     const child = execFile('bash', [script], { env: { PATH: process.env.PATH ?? '', ...env } }, (err, stdout, stderr) => {
@@ -92,7 +93,7 @@ function run(
       resolve({ code: typeof code === 'number' ? code : null, stdout, stderr });
     });
     // Hooks get their JSON payload on stdin and the harness closes it; mirror that.
-    child.stdin?.end('{}\n');
+    child.stdin?.end(`${payload}\n`);
     let killed = false;
     const t = setTimeout(() => {
       killed = true;
@@ -216,39 +217,83 @@ describe('rewake listener: silence', () => {
   });
 });
 
-describe('print-mode detection from the claude command line', () => {
-  function isPrint(args: string): string {
+describe('session-mode detection from the claude command line', () => {
+  function mode(args: string): string {
     return execFileSync(
       'bash',
-      ['-c', `source "${COMMON}" >/dev/null 2>&1; c2c::_claude_argv_is_print "$ARGS" && echo PRINT || echo LIVE`],
+      ['-c', `source "${COMMON}" >/dev/null 2>&1; c2c::_claude_argv_mode "$ARGS"`],
       { env: { PATH: process.env.PATH ?? '', HOME: mkTmp('home-'), ARGS: args }, encoding: 'utf8' },
     ).trim();
   }
 
   it('interactive claude is live', () => {
-    expect(isPrint('claude --dangerously-skip-permissions')).toBe('LIVE');
-    expect(isPrint('claude --model opus --dangerously-skip-permissions')).toBe('LIVE');
-    expect(isPrint('claude --resume 0b7c3f1e-2a4d-4e5f-9a8b-1c2d3e4f5a6b')).toBe('LIVE');
+    expect(mode('claude --dangerously-skip-permissions')).toBe('live');
+    expect(mode('claude --model opus --dangerously-skip-permissions')).toBe('live');
+    expect(mode('claude --resume 0b7c3f1e-2a4d-4e5f-9a8b-1c2d3e4f5a6b')).toBe('live');
+    expect(mode('claude --output-format text')).toBe('live');
   });
-  it('claude -p / --print is headless', () => {
-    expect(isPrint('claude -p hello')).toBe('PRINT');
-    expect(isPrint('/usr/bin/node /x/claude-code/cli.js --print hi')).toBe('PRINT');
+  it('claude -p / --print without streaming input is print', () => {
+    expect(mode('claude -p hello')).toBe('print');
+    expect(mode('/usr/bin/node /x/claude-code/cli.js --print hi')).toBe('print');
+    expect(mode('claude -p --output-format stream-json --verbose hi')).toBe('print');
   });
-  // CLI 2.1.289: a stream-json session never reaches system/init while the
-  // listener's SessionStart long-poll is running, and there is no interactive
-  // user to show a rewake letter to anyway.
-  it('any --output-format stream-json session is headless, with or without -p', () => {
+  // CLI 2.1.292: a Stop asyncRewake hook runs in the background and rewakes a
+  // stream-json session; only a SessionStart one blocks system/init.
+  it('streaming input is stream, with or without -p (conveyor chat, SDK)', () => {
     expect(
-      isPrint(
+      mode(
         'claude --output-format stream-json --input-format stream-json --verbose --dangerously-skip-permissions --disallowedTools EnterPlanMode ExitPlanMode AskUserQuestion --model claude-opus-5-5[1m] --effort medium',
       ),
-    ).toBe('PRINT');
-    expect(isPrint('claude --output-format=stream-json --input-format=stream-json')).toBe('PRINT');
-    expect(isPrint('claude -p --input-format stream-json --output-format stream-json')).toBe('PRINT');
-    expect(isPrint('claude --print --input-format=stream-json')).toBe('PRINT');
+    ).toBe('stream');
+    expect(mode('claude --output-format=stream-json --input-format=stream-json')).toBe('stream');
+    expect(mode('claude -p --input-format stream-json --output-format stream-json')).toBe('stream');
+    expect(mode('claude --print --input-format=stream-json')).toBe('stream');
   });
-  it('a non-stream --output-format does not make an interactive session headless', () => {
-    expect(isPrint('claude --output-format text')).toBe('LIVE');
+});
+
+describe('rewake listener in a stream-json session', () => {
+  it('bows out on SessionStart, which would block system/init', async () => {
+    const s = registered();
+    const r = await run(
+      LISTEN,
+      { HOME: s.home, C2C_DIR: s.c2cDir, C2C_URL: 'http://127.0.0.1:9', C2C_SESSION_MODE: 'stream', C2C_WINDOW_ID: '4242' },
+      3000,
+      '{"session_id":"x","hook_event_name": "SessionStart","source":"startup"}',
+    );
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(existsSync(s.pidFile)).toBe(false);
+  });
+
+  it('arms on Stop and wakes the session with the mail', async () => {
+    const s = registered();
+    const m = await fakeMediator([{ messages: [MSG], pair_requests: [] }]);
+    try {
+      const r = await run(
+        LISTEN,
+        { HOME: s.home, C2C_DIR: s.c2cDir, C2C_URL: m.url, C2C_SESSION_MODE: 'stream', C2C_WINDOW_ID: '4242' },
+        10000,
+        '{"session_id":"x","hook_event_name":"Stop"}',
+      );
+      expect(r.code).toBe(2);
+      expect(r.stdout).toMatch(/id=msg-1 from=alice/);
+      expect(m.acks).toEqual([{ ids: ['msg-1'] }]);
+    } finally {
+      await m.close();
+    }
+  }, 15000);
+
+  it('the Stop backstop leaves the inbox to the listener', async () => {
+    const s = registered();
+    const m = await fakeMediator([{ messages: [MSG], pair_requests: [] }]);
+    try {
+      const r = await run(STOP_HOOK, { HOME: s.home, C2C_DIR: s.c2cDir, C2C_URL: m.url, C2C_SESSION_MODE: 'stream' }, 5000);
+      expect(r.code).toBe(0);
+      expect(r.stdout).toBe('');
+      expect(m.inboxCalls()).toBe(0);
+    } finally {
+      await m.close();
+    }
   });
 });
 

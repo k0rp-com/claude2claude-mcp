@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Peer-mail listener, run by Claude Code as an `asyncRewake` hook on SessionStart
-# and Stop (see hooks/hooks.json). The harness keeps it in the background and
+# and Stop (see hooks/hooks.json; in stream-json sessions — Stop only, see below). The harness keeps it in the background and
 # wakes the model ONLY when it exits with code 2, feeding it stdout (or stderr,
 # if stderr is non-empty — hence stderr is muted below). Exit 0 and a timeout
 # kill leave no trace in the chat. So the contract is: stay silent until mail or
@@ -29,11 +29,18 @@ source "$SCRIPT_DIR/common.sh"
 set +e
 # Не менять, потому что при непустом stderr харнесс отдаёт модели stderr ВМЕСТО stdout — любой шум curl/jq заменил бы собой доставленное письмо
 exec 2>/dev/null
-# The harness writes the hook payload to stdin; we don't need it.
-[[ -t 0 ]] || cat >/dev/null
+# The harness writes the hook payload to stdin; only the event name matters.
+hook_payload=""
+[[ -t 0 ]] || hook_payload="$(cat)"
 
-# Не менять, потому что в безголовой сессии (`-p` или `--output-format stream-json`) long-poll блокирует её: в `-p` asyncRewake-хук синхронный, в stream-json SessionStart-хук не даёт наступить system/init — сессия висит до таймаута хука; почту там дренирует stop-hook.sh
-c2c::session_is_print_mode && exit 0
+# Не менять, потому что в `-p` без stream-json ввода asyncRewake-хук синхронный — long-poll повесил бы сессию до таймаута хука; почту там дренирует stop-hook.sh
+# Не менять, потому что в stream-json (чат конвейера, SDK) SessionStart-хук держит system/init до своего выхода, а Stop-хук честно фоновый и будит сессию — листенер взводится с конца первого хода
+case "$(c2c::session_mode)" in
+  print) exit 0 ;;
+  stream)
+    [[ "$hook_payload" =~ \"hook_event_name\"[[:space:]]*:[[:space:]]*\"SessionStart\" ]] && exit 0
+    ;;
+esac
 
 c2c::ensure_tools
 # Silently no-op if not yet registered — new installs reach this point (every

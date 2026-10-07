@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Stop hook — peer mail delivery for headless sessions only (`claude -p`, or any
-# `--output-format stream-json` session: SDK / chat front-ends).
+# Stop hook — peer mail delivery for `claude -p` sessions without streaming input
+# only.
 #
-# Everywhere else listen.sh runs as an asyncRewake hook on SessionStart/Stop and
-# owns the inbox; draining it here as well would race that listener (both fetch
-# unacked bodies → double delivery). In a headless session that long-poll would
-# block the session (synchronous hook in -p, no system/init in stream-json), so
+# Everywhere else (interactive, and stream-json chat/SDK sessions) listen.sh runs
+# as an asyncRewake hook and owns the inbox; draining it here as well would race
+# that listener (both fetch unacked bodies → double delivery). In a print session
+# without streaming input the harness would run that hook synchronously, so
 # listen.sh bows out and this hook drains the inbox at the end of each turn.
 #
 # Delivery is always "auto": bodies are loaded inline wrapped in the
@@ -19,7 +19,7 @@ source "$SCRIPT_DIR/common.sh"
 
 cat >/dev/null 2>&1 || true
 
-# Не менять, потому что вне безголовой сессии inbox принадлежит asyncRewake-листенеру — параллельный дренаж здесь доставлял бы письма дважды
+# Не менять, потому что вне `-p` без stream-json ввода inbox принадлежит asyncRewake-листенеру — параллельный дренаж здесь доставлял бы письма дважды
 c2c::session_is_print_mode || exit 0
 
 # Silently no-op if not configured / no name yet / missing tools.

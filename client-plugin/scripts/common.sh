@@ -666,47 +666,66 @@ c2c::warm_window_id() {
   __c2c_window_id="$(c2c::window_id)"
 }
 
-# True iff a claude command line ($1) is a headless session: -p/--print, or any
-# `--output-format stream-json` (SDK / chat front-ends, with or without -p and
-# --input-format). There Claude Code does not run an asyncRewake hook in the
-# background in any useful way: in `-p` it runs synchronously, and in a
-# stream-json session (CLI 2.1.289) the SessionStart long-poll blocks
-# system/init, so the session never answers until the hook timeout. Nor is
-# there an interactive user to show a rewake letter to. Headless sessions get
-# their mail from stop-hook.sh instead.
-c2c::_claude_argv_is_print() {
-  local tok prev=""
+# Echo the hook mode of a claude command line ($1): `print`, `stream` or `live`.
+#   print  — -p/--print WITHOUT streaming input. Claude Code runs asyncRewake
+#            hooks synchronously there, so a long-poll would hang the session
+#            until its hook timeout; stop-hook.sh drains the inbox instead.
+#   stream — `--input-format stream-json` (SDK / chat front-ends, with or
+#            without -p), or `--output-format stream-json` without -p. A Stop
+#            asyncRewake hook runs in the background and rewakes the session
+#            with a new turn, exactly as interactively; but a SessionStart one
+#            blocks system/init until it exits (verified on CLI 2.1.292), so
+#            listen.sh skips only SessionStart and arms on the first Stop.
+#   live   — everything else (interactive TUI).
+c2c::_claude_argv_mode() {
+  local tok prev="" print=0 stream=0
   local -a argv
   read -r -a argv <<<"$1"
-  (( ${#argv[@]} > 0 )) || return 1
+  (( ${#argv[@]} > 0 )) || { printf 'live'; return 0; }
   for tok in "${argv[@]}"; do
     case "$tok" in
-      -p | --print | --output-format=stream-json) return 0 ;;
-      stream-json) [[ "$prev" == --output-format ]] && return 0 ;;
+      -p | --print) print=1 ;;
+      --input-format=stream-json) stream=2 ;;
+      --output-format=stream-json) (( stream )) || stream=1 ;;
+      stream-json)
+        [[ "$prev" == --input-format ]] && stream=2
+        [[ "$prev" == --output-format ]] && (( stream == 0 )) && stream=1
+        ;;
     esac
     prev="$tok"
   done
-  return 1
+  # Не менять, потому что `-p --output-format stream-json` без stream-json ВВОДА — это всё ещё синхронный print: важен формат ввода, не вывода
+  if (( stream == 2 )); then printf 'stream'
+  elif (( print )); then printf 'print'
+  elif (( stream )); then printf 'stream'
+  else printf 'live'
+  fi
 }
 
-# True iff the NEAREST claude ancestor (the one running this hook) is a headless
-# session per c2c::_claude_argv_is_print. Nearest, not outermost: an SDK child
-# runs its own hooks. C2C_PRINT_MODE=1/0 overrides (tests, odd launchers). No
-# claude ancestor visible → assume live: a manual run is not a hook at all.
-c2c::session_is_print_mode() {
-  case "${C2C_PRINT_MODE:-}" in 1) return 0 ;; 0) return 1 ;; esac
-  command -v ps >/dev/null 2>&1 || return 1
+# Hook mode of the NEAREST claude ancestor (the one running this hook) per
+# c2c::_claude_argv_mode. Nearest, not outermost: an SDK child runs its own hooks.
+# Overrides (tests, odd launchers): C2C_SESSION_MODE=print|stream|live, or the
+# older C2C_PRINT_MODE=1 (print) / 0 (live). No claude ancestor visible → live:
+# a manual run is not a hook at all.
+c2c::session_mode() {
+  case "${C2C_SESSION_MODE:-}" in print|stream|live) printf '%s' "$C2C_SESSION_MODE"; return 0 ;; esac
+  case "${C2C_PRINT_MODE:-}" in 1) printf 'print'; return 0 ;; 0) printf 'live'; return 0 ;; esac
+  command -v ps >/dev/null 2>&1 || { printf 'live'; return 0; }
   local pid="$$" i
   for i in $(seq 1 "$C2C_MAX_ANCESTRY_DEPTH"); do
     if c2c::_pid_is_claude "$pid"; then
-      c2c::_claude_argv_is_print "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
-      return
+      c2c::_claude_argv_mode "$(ps -ww -o args= -p "$pid" 2>/dev/null)"
+      return 0
     fi
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
     [[ "$pid" =~ ^[0-9]+$ ]] || break
     (( pid <= 1 )) && break
   done
-  return 1
+  printf 'live'
+}
+
+c2c::session_is_print_mode() {
+  [[ "$(c2c::session_mode)" == print ]]
 }
 
 # True iff $1 is a live process that is our listen.sh. Guards PID reuse: after a

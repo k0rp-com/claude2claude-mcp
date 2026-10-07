@@ -132,7 +132,11 @@ pnpm typecheck
 - **stderr заглушён** (`exec 2>/dev/null`): при непустом stderr харнесс отдаёт модели stderr *вместо* stdout, и шум curl/jq заменил бы собой письмо;
 - мьютекс/перехват (см. ниже) отрабатывают **молча** — `mine` → `exit 0`, `foreign` → тихий takeover;
 - pair-request'ы не ack'аются сервером, а процесс завершается после каждой доставки, поэтому уже показанные id хранятся в `$C2C_DIR/seen_pair_requests`. Иначе каждый перезапуск будил бы модель тем же запросом;
-- в **безголовой** сессии long-poll повесил бы её: в `claude -p` Claude Code исполняет `asyncRewake`-хук синхронно, а в любой сессии с `--output-format stream-json` (SDK, чат-режимы, с `-p` или без) SessionStart-хук не даёт наступить `system/init`, и сессия молчит до таймаута хука. Показать rewake-письмо там всё равно некому. `c2c::session_is_print_mode` (argv ближайшего предка `claude`: `-p`/`--print` или `--output-format stream-json`/`=stream-json`; override `C2C_PRINT_MODE=1|0`) → listener сразу выходит с кодом 0. В таких сессиях почту доставляет `stop-hook.sh`: дренирует inbox в конце хода и блокирует Stop с телами в security frame. В интерактивной сессии `stop-hook.sh` ничего не делает, иначе гонялся бы с listener'ом за одним inbox.
+- режим сессии определяет `c2c::session_mode` по argv ближайшего предка `claude` (override `C2C_SESSION_MODE=print|stream|live`, старый `C2C_PRINT_MODE=1|0`):
+  - **`print`** — `claude -p` без stream-json ввода: Claude Code исполняет `asyncRewake`-хук синхронно, long-poll повесил бы сессию. Listener сразу выходит с кодом 0, почту доставляет `stop-hook.sh`: дренирует inbox в конце хода и блокирует Stop с телами в security frame.
+  - **`stream`** — `--input-format stream-json` (чат конвейера, SDK; с `-p` или без): SessionStart-хук держит `system/init` до своего выхода, поэтому на SessionStart listener выходит сразу; а Stop-хук честно фоновый и будит сессию новым ходом (проверено на CLI 2.1.292) — listener взводится с конца первого хода и дальше работает как в интерактиве.
+  - **`live`** — интерактив, listener на SessionStart и Stop.
+  Вне `print` `stop-hook.sh` ничего не делает, иначе гонялся бы с listener'ом за одним inbox.
 
 Если окно простояло без единого хода дольше таймаута хука, listener тихо умирает и поднимается на следующем `Stop`. Письма при этом не теряются, они ждут на сервере.
 
@@ -219,7 +223,7 @@ scripts/
 tests/                              # vitest, 29 тестов
 client-plugin/
   .claude-plugin/plugin.json
-  hooks/hooks.json                  # SessionStart/Stop: контекст + asyncRewake-listener (+ Stop-дренаж для -p / stream-json)
+  hooks/hooks.json                  # SessionStart/Stop: контекст + asyncRewake-listener (+ Stop-дренаж для -p без stream-json ввода)
   commands/c2c-client:peer-*.md                # 12 slash-команд
   scripts/                          # bash + jq + openssl + curl
 ```

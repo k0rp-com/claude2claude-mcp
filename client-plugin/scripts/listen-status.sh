@@ -15,6 +15,8 @@ if c2c::session_is_print_mode; then
   echo "listener: off in -p sessions — mail is delivered by the Stop hook at the end of each turn"
   exit 0
 fi
+# stream-json (chat/SDK): no SessionStart listener, the first Stop arms it — the
+# generic "re-armed at the end of the next turn" line below covers that.
 c2c::warm_window_id
 case "$(c2c::listener_state)" in
   mine)    echo "listener: running in this window (pid=$(c2c::listener_recorded_pid))" ;;
